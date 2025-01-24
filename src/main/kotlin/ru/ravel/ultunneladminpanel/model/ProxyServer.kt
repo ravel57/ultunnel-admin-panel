@@ -3,7 +3,7 @@ package ru.ravel.ultunneladminpanel.model
 import jakarta.persistence.*
 
 @Entity
-data class Server(
+data class ProxyServer(
 	@Id
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	var id: Long? = null,

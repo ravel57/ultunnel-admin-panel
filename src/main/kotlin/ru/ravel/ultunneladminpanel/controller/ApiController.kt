@@ -1,19 +1,51 @@
 package ru.ravel.ultunneladminpanel.controller
 
 import org.springframework.http.ResponseEntity
-import org.springframework.web.bind.annotation.GetMapping
-import org.springframework.web.bind.annotation.RequestMapping
-import org.springframework.web.bind.annotation.RestController
-import ru.ravel.ultunneladminpanel.service.ThreeXUiService
+import org.springframework.web.bind.annotation.*
+import ru.ravel.ultunneladminpanel.dto.UserProxyTypeHost
+import ru.ravel.ultunneladminpanel.model.Proxy
+import ru.ravel.ultunneladminpanel.model.ProxyServer
+import ru.ravel.ultunneladminpanel.model.User
+import ru.ravel.ultunneladminpanel.service.ProxyServerService
+import ru.ravel.ultunneladminpanel.service.UserService
+
 
 @RestController
 @RequestMapping("/api/v1")
 class ApiController(
-	val threeXUiService: ThreeXUiService
+	val proxyServerService: ProxyServerService,
+	val userService: UserService,
 ) {
 
-	@GetMapping("")
-	fun getConfigs(): ResponseEntity<Any> {
-		return ResponseEntity.ok().body(null)
+	@PostMapping("/add-server")
+	fun addServer(
+		@RequestBody proxyServer: ProxyServer,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(proxyServerService.addNewServer(proxyServer))
 	}
+
+	@PostMapping("/add-proxy-to/{url}")
+	fun addProxyToServer(
+		@PathVariable url: String,
+		@RequestBody proxy: Proxy,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(proxyServerService.addProxyToServer(url, proxy))
+	}
+
+
+	@PostMapping("/add-new-user")
+	fun addNewUser(
+		@RequestBody user: User,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(userService.addNewUser(user))
+	}
+
+
+	@PostMapping("/add-proxy-to-user")
+	fun addProxyToUser(
+		@RequestBody userProxyTypeHost: UserProxyTypeHost,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(userService.addProxyToUser(userProxyTypeHost))
+	}
+
 }

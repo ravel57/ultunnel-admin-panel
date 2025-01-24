@@ -1,4 +1,4 @@
-server.port: 8080
+server.port: 8081
 
 spring:
   application.name: ultunnel-admin-panel
@@ -19,5 +19,5 @@ spring:
     cache: false
 
 auth:
-  login: ${AUTH_LOGIN}
-  password: ${AUTH_PASSWORD}
+  login: ${AUTH_LOGIN:admin}
+  password: ${AUTH_PASSWORD:admin}

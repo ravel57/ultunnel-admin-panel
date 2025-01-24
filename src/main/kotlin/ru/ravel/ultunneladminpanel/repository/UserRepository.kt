@@ -1,8 +1,6 @@
 package ru.ravel.ultunneladminpanel.repository
 
 import org.springframework.data.jpa.repository.JpaRepository
-import ru.ravel.ultunneladminpanel.model.Proxy
+import ru.ravel.ultunneladminpanel.model.User
 
-
-interface ProxyRepository : JpaRepository<Proxy, Long> {
-}
+interface UserRepository : JpaRepository<User, Long>
