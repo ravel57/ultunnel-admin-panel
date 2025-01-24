@@ -24,12 +24,13 @@ class ApiController(
 		return ResponseEntity.ok().body(proxyServerService.addNewServer(proxyServer))
 	}
 
-	@PostMapping("/add-proxy-to/{url}")
+
+	@PostMapping("/add-proxy-to/{proxyServerId}")
 	fun addProxyToServer(
-		@PathVariable url: String,
+		@PathVariable proxyServerId: Long,
 		@RequestBody proxy: Proxy,
 	): ResponseEntity<Any> {
-		return ResponseEntity.ok().body(proxyServerService.addProxyToServer(url, proxy))
+		return ResponseEntity.ok().body(proxyServerService.addProxyToServer(proxyServerId, proxy))
 	}
 
 
@@ -46,6 +47,12 @@ class ApiController(
 		@RequestBody userProxyTypeHost: UserProxyTypeHost,
 	): ResponseEntity<Any> {
 		return ResponseEntity.ok().body(userService.addProxyToUser(userProxyTypeHost))
+	}
+
+
+	@GetMapping("/get-user-proxy")
+	fun getProxyServer(@RequestParam secretKey: String): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(proxyServerService.getProxyServer(secretKey))
 	}
 
 }

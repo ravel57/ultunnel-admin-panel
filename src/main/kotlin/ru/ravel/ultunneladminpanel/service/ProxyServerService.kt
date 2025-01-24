@@ -1,5 +1,6 @@
 package ru.ravel.ultunneladminpanel.service
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -11,8 +12,11 @@ import ru.ravel.ultunneladminpanel.model.Proxy
 import ru.ravel.ultunneladminpanel.model.ProxyServer
 import ru.ravel.ultunneladminpanel.model.ProxyType.*
 import ru.ravel.ultunneladminpanel.model.User
+import ru.ravel.ultunneladminpanel.model.UsersProxy
+import ru.ravel.ultunneladminpanel.model.xui.Root
 import ru.ravel.ultunneladminpanel.repository.ProxyRepository
 import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
+import ru.ravel.ultunneladminpanel.repository.UserRepository
 import java.io.File
 import java.util.*
 
@@ -21,6 +25,7 @@ import java.util.*
 class ProxyServerService(
 	val proxyServerRepository: ProxyServerRepository,
 	val proxyRepository: ProxyRepository,
+	val userRepository: UserRepository,
 ) {
 
 	fun addNewServer(proxyServer: ProxyServer): ProxyServer {
@@ -32,8 +37,8 @@ class ProxyServerService(
 	}
 
 
-	fun addProxyToServer(url: String, proxy: Proxy): Proxy {
-		val proxyServer = proxyServerRepository.findByHost(url).apply {
+	fun addProxyToServer(proxyServerId: Long, proxy: Proxy): Proxy {
+		val proxyServer = proxyServerRepository.findById(proxyServerId).orElseThrow().apply {
 			proxyRepository.save(proxy)
 		}
 		proxyServer?.proxies?.add(proxy)
@@ -45,24 +50,28 @@ class ProxyServerService(
 	fun createUserProxy(url: String, proxy: Proxy, user: User): String {
 		when (proxy.type!!) {
 			THREEX_UI -> {
-				var json = """
-					|{
-                    |    "username": "${proxy.login}",
-                    |    "password": "${proxy.password}"
-					|}""".trimMargin()
+				var json = "{\"username\":\"${proxy.login}\",\"password\":\"${proxy.password}\"}"
 				var body = json.toRequestBody("application/json".toMediaType())
 				var request = Request.Builder()
 					.header("Content-Type", "application/json")
 					.url("https://${url}:${proxy.port}/login")
 					.post(body)
 					.build()
-				val response = createUnsafeOkHttpClient().newCall(request).execute()
+				var response = createUnsafeOkHttpClient().newCall(request).execute()
 				val cooke = response.headers["Set-Cookie"]
 				val uuid = UUID.randomUUID().toString()
-				val portFIXME = 26026
-				val idFIXME = 10
+				request = Request.Builder()
+					.header("Content-Type", "application/json")
+					.url("https://${url}:${proxy.port}/panel/api/inbounds/list")
+					.header("Cookie", cooke.toString())
+					.get()
+					.build()
+				response = createUnsafeOkHttpClient().newCall(request).execute()
+				val readValue = ObjectMapper().readValue(response.body?.string(), Root::class.java)
+				val port = readValue.obj?.last { it.protocol == "vless" }?.port
+				var id = readValue.obj?.last { it.protocol == "vless" }?.id
 				json = """{
-					"id": ${idFIXME},
+					"id": ${id},
 					"settings": "{\"clients\":[{\"id\":\"$uuid\",\"alterId\":0,\"email\":\"${user.name}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":\"\",\"subId\":\"\"}]}"
 				}"""
 				body = json.toRequestBody("application/json".toMediaType())
@@ -73,7 +82,7 @@ class ProxyServerService(
 					.post(body)
 					.build()
 				createUnsafeOkHttpClient().newCall(request).execute()
-				return "vless://${uuid}@${url}:${portFIXME}?type=tcp&security=none"
+				return "vless://${uuid}@${url}:${port}?type=tcp&security=none"
 			}
 
 			HYSTERIA -> {
@@ -103,6 +112,10 @@ class ProxyServerService(
 				return config
 			}
 		}
+	}
+
+	fun getProxyServer(secretKey: String): List<UsersProxy> {
+		return userRepository.findBySecretKey(secretKey)?.proxies ?: emptyList()
 	}
 
 }

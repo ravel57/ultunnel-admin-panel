@@ -42,12 +42,12 @@ class UserService(
 
 	fun addProxyToUser(userProxyTypeHost: UserProxyTypeHost): UsersProxy? {
 		val user = userRepository.findById(userProxyTypeHost.userId).orElseThrow()
-		val usersProxy = proxyServerRepository.findAll()
-			.find { it.host == userProxyTypeHost.host }
+		val proxyServer = proxyServerRepository.findById(userProxyTypeHost.proxyServerId).orElseThrow()
+		val usersProxy = proxyServer
 			?.proxies
 			?.find { it.type == userProxyTypeHost.type }
 			?.let { proxy ->
-				val connectionData = proxyServerService.createUserProxy(userProxyTypeHost.host, proxy, user)
+				val connectionData = proxyServerService.createUserProxy(proxyServer.host!!, proxy, user)
 				val usersProxy = UsersProxy(connectionData = connectionData)
 				userProxyRepository.save(usersProxy)
 				user.proxies.add(usersProxy)
