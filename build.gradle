@@ -41,13 +41,18 @@ dependencies {
 //	implementation 'org.springframework.boot:spring-boot-starter-security'
 
 //	okhttp
-	implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+	implementation 'com.squareup.okhttp3:okhttp'
 
 //	web
 	implementation 'org.springframework.boot:spring-boot-starter-thymeleaf'
 	implementation 'org.thymeleaf.extras:thymeleaf-extras-springsecurity6'
 
+//	wg-easy
 	implementation "com.github.megoRU:wg-easy-wrapper:v3.2"
+
+//	ssh
+	implementation 'com.jcraft:jsch:0.1.55'
+
 
 //	tests
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'

@@ -19,24 +19,10 @@ class UserService(
 	val proxyServerService: ProxyServerService
 ) {
 
-	companion object {
-		private const val ALL_CHARACTERS: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	}
-
-
 	fun addNewUser(user: User): User {
 		user.secretKey = generateSecretKey()
 		userRepository.save(user)
 		return user
-	}
-
-
-	fun generateSecretKey(): String {
-		val password = StringBuilder()
-		for (i in 0..20) {
-			password.append(ALL_CHARACTERS.random())
-		}
-		return password.toList().shuffled().joinToString("")
 	}
 
 
@@ -57,4 +43,14 @@ class UserService(
 		return usersProxy
 	}
 
+}
+
+
+fun generateSecretKey(): String {
+	val allCharacters: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	val password = StringBuilder()
+	for (i in 0..20) {
+		password.append(allCharacters.random())
+	}
+	return password.toList().shuffled().joinToString("")
 }

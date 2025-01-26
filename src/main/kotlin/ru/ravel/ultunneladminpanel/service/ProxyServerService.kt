@@ -14,6 +14,7 @@ import ru.ravel.ultunneladminpanel.model.ProxyType.*
 import ru.ravel.ultunneladminpanel.model.User
 import ru.ravel.ultunneladminpanel.model.UsersProxy
 import ru.ravel.ultunneladminpanel.model.xui.Root
+import ru.ravel.ultunneladminpanel.model.xui.ThreeXuiType
 import ru.ravel.ultunneladminpanel.repository.ProxyRepository
 import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
 import ru.ravel.ultunneladminpanel.repository.UserRepository
@@ -23,9 +24,10 @@ import java.util.*
 
 @Service
 class ProxyServerService(
-	val proxyServerRepository: ProxyServerRepository,
-	val proxyRepository: ProxyRepository,
-	val userRepository: UserRepository,
+	private val sshService: SshService,
+	private val proxyServerRepository: ProxyServerRepository,
+	private val proxyRepository: ProxyRepository,
+	private val userRepository: UserRepository,
 ) {
 
 	fun addNewServer(proxyServer: ProxyServer): ProxyServer {
@@ -47,29 +49,30 @@ class ProxyServerService(
 	}
 
 
-	fun createUserProxy(url: String, proxy: Proxy, user: User): String {
+	fun createUserProxy(host: String, proxy: Proxy, user: User): String {
 		when (proxy.type!!) {
 			THREEX_UI -> {
 				var json = "{\"username\":\"${proxy.login}\",\"password\":\"${proxy.password}\"}"
 				var body = json.toRequestBody("application/json".toMediaType())
 				var request = Request.Builder()
 					.header("Content-Type", "application/json")
-					.url("https://${url}:${proxy.port}/login")
+					.url("https://${host}:${proxy.port}/login")
 					.post(body)
 					.build()
 				var response = createUnsafeOkHttpClient().newCall(request).execute()
 				val cooke = response.headers["Set-Cookie"]
-				val uuid = UUID.randomUUID().toString()
 				request = Request.Builder()
 					.header("Content-Type", "application/json")
-					.url("https://${url}:${proxy.port}/panel/api/inbounds/list")
+					.url("https://${host}:${proxy.port}/panel/api/inbounds/list")
 					.header("Cookie", cooke.toString())
 					.get()
 					.build()
 				response = createUnsafeOkHttpClient().newCall(request).execute()
 				val readValue = ObjectMapper().readValue(response.body?.string(), Root::class.java)
-				val port = readValue.obj?.last { it.protocol == "vless" }?.port
-				var id = readValue.obj?.last { it.protocol == "vless" }?.id
+				val protocol = ThreeXuiType.VLESS.name.lowercase()
+				val port = readValue.obj?.last { it.protocol == protocol }?.port
+				val id = readValue.obj?.last { it.protocol == protocol }?.id
+				val uuid = UUID.randomUUID().toString()
 				json = """{
 					"id": ${id},
 					"settings": "{\"clients\":[{\"id\":\"$uuid\",\"alterId\":0,\"email\":\"${user.name}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":\"\",\"subId\":\"\"}]}"
@@ -77,12 +80,12 @@ class ProxyServerService(
 				body = json.toRequestBody("application/json".toMediaType())
 				request = Request.Builder()
 					.header("Content-Type", "application/json")
-					.url("https://${url}:${proxy.port}/panel/api/inbounds/addClient")
+					.url("https://${host}:${proxy.port}/panel/api/inbounds/addClient")
 					.header("Cookie", cooke.toString())
 					.post(body)
 					.build()
 				createUnsafeOkHttpClient().newCall(request).execute()
-				return "vless://${uuid}@${url}:${port}?type=tcp&security=none"
+				return "${protocol}://${uuid}@${host}:${port}?type=tcp&security=none"
 			}
 
 			HYSTERIA -> {
@@ -90,13 +93,14 @@ class ProxyServerService(
 			}
 
 			SSH -> {
-				return "false"
+				val password = sshService.addNewUser(proxy, host, user)
+				return "ssh://${user.name}:${password}@${host}:${proxy.port}"
 			}
 
 			WIREGUARD, AMNEZIA_WIREGUARD -> {
 				val api = WgEasyAPI.Builder()
 					.password(proxy.password)
-					.host("https://${url}:${proxy.port}")
+					.host("https://${host}:${proxy.port}")
 					.build()
 				try {
 					if (api.clients.none { it.name == user.name }) {
