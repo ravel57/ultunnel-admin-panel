@@ -1,6 +1,7 @@
 package ru.ravel.ultunneladminpanel.model
 
 import jakarta.persistence.*
+import java.time.ZonedDateTime
 
 
 @Entity
@@ -19,4 +20,8 @@ data class User(
 		fetch = FetchType.EAGER,
 	)
 	var proxies: MutableList<UsersProxy> = mutableListOf(),
+
+	var isEnabled: Boolean? = null,
+
+	var createdDate: ZonedDateTime? = null
 )

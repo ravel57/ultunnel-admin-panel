@@ -39,6 +39,11 @@ class ProxyServerService(
 	}
 
 
+	fun editServer(proxyServer: ProxyServer): ProxyServer {
+		return proxyServerRepository.save(proxyServer)
+	}
+
+
 	fun addProxyToServer(proxyServerId: Long, proxy: Proxy): Proxy {
 		val proxyServer = proxyServerRepository.findById(proxyServerId).orElseThrow().apply {
 			proxyRepository.save(proxy)

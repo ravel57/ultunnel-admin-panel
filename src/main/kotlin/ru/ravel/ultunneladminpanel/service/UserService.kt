@@ -4,10 +4,10 @@ import org.springframework.stereotype.Service
 import ru.ravel.ultunneladminpanel.dto.UserProxyTypeHost
 import ru.ravel.ultunneladminpanel.model.User
 import ru.ravel.ultunneladminpanel.model.UsersProxy
-import ru.ravel.ultunneladminpanel.repository.ProxyRepository
 import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
 import ru.ravel.ultunneladminpanel.repository.UserProxyRepository
 import ru.ravel.ultunneladminpanel.repository.UserRepository
+import java.time.ZonedDateTime
 
 
 @Service
@@ -15,14 +15,20 @@ class UserService(
 	val userRepository: UserRepository,
 	val userProxyRepository: UserProxyRepository,
 	val proxyServerRepository: ProxyServerRepository,
-	val proxyRepository: ProxyRepository,
-	val proxyServerService: ProxyServerService
+	val proxyServerService: ProxyServerService,
 ) {
 
 	fun addNewUser(user: User): User {
 		user.secretKey = generateSecretKey()
+		user.isEnabled = true
+		user.createdDate = ZonedDateTime.now()
 		userRepository.save(user)
 		return user
+	}
+
+
+	fun editUser(user: User): User {
+		return userRepository.save(user)
 	}
 
 

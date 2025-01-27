@@ -17,11 +17,18 @@ class ApiController(
 	val userService: UserService,
 ) {
 
-	@PostMapping("/add-server")
+	@PostMapping("/add-new-server")
 	fun addServer(
 		@RequestBody proxyServer: ProxyServer,
 	): ResponseEntity<Any> {
 		return ResponseEntity.ok().body(proxyServerService.addNewServer(proxyServer))
+	}
+
+	@PostMapping("/edit-server")
+	fun editServer(
+		@RequestBody proxyServer: ProxyServer,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(proxyServerService.editServer(proxyServer))
 	}
 
 
@@ -39,6 +46,14 @@ class ApiController(
 		@RequestBody user: User,
 	): ResponseEntity<Any> {
 		return ResponseEntity.ok().body(userService.addNewUser(user))
+	}
+
+
+	@PostMapping("/edit-user")
+	fun editUser(
+		@RequestBody user: User,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(userService.editUser(user))
 	}
 
 
