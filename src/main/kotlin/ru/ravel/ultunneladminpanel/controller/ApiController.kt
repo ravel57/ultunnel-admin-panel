@@ -1,11 +1,13 @@
 package ru.ravel.ultunneladminpanel.controller
 
+import jakarta.servlet.http.HttpServletResponse
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import ru.ravel.ultunneladminpanel.dto.UserProxyTypeHost
 import ru.ravel.ultunneladminpanel.model.Proxy
 import ru.ravel.ultunneladminpanel.model.ProxyServer
 import ru.ravel.ultunneladminpanel.model.User
+import ru.ravel.ultunneladminpanel.model.config.ConfigTemplate
 import ru.ravel.ultunneladminpanel.service.ProxyServerService
 import ru.ravel.ultunneladminpanel.service.UserService
 
@@ -65,9 +67,27 @@ class ApiController(
 	}
 
 
-	@GetMapping("/get-user-proxy")
-	fun getProxyServer(@RequestParam secretKey: String): ResponseEntity<Any> {
+	@GetMapping("/get-users-proxies")
+	fun getUsersProxyServers(@RequestParam secretKey: String): ResponseEntity<Any> {
 		return ResponseEntity.ok().body(proxyServerService.getProxyServer(secretKey))
 	}
+
+
+	@GetMapping("/get-users-proxy-servers-singbox")
+	fun getUsersProxyServersSingbox(
+		@RequestParam secretKey: String,
+		response: HttpServletResponse,
+	): ResponseEntity<Any> {
+		val configData = proxyServerService.getProxyServer(secretKey)
+		val configTemplate = configData.map { ConfigTemplate().getConfig(it) }
+		val filename = "configs.json"
+		response.contentType = "application/json"
+		response.setHeader("Content-Disposition", "attachment; filename=\"$filename\"")
+		response.outputStream.use { output ->
+			output.write("[${configTemplate.joinToString(",\n")}]".toByteArray())
+		}
+		return ResponseEntity.ok().build()
+	}
+
 
 }

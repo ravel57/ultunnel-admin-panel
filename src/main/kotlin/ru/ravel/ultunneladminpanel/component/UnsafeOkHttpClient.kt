@@ -21,6 +21,8 @@ fun createUnsafeOkHttpClient(): OkHttpClient {
 		return OkHttpClient.Builder()
 			.sslSocketFactory(sslSocketFactory, trustAllCerts[0] as X509TrustManager)
 			.hostnameVerifier { _, _ -> true }
+			.followRedirects(true)
+			.followSslRedirects(true)
 			.build()
 	} catch (e: Exception) {
 		throw RuntimeException(e)

@@ -10,6 +10,7 @@ data class ProxyServer(
 
 	var name: String? = null,
 
+	@Column(unique = true)
 	var host: String? = null,
 
 	@OneToMany(

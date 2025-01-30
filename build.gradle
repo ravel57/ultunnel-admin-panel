@@ -40,6 +40,9 @@ dependencies {
 //	security
 //	implementation 'org.springframework.boot:spring-boot-starter-security'
 
+//	jackson
+	implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.15.0")
+
 //	okhttp
 	implementation 'com.squareup.okhttp3:okhttp'
 
@@ -75,4 +78,12 @@ allOpen {
 
 tasks.named('test') {
 	useJUnitPlatform()
+}
+
+sourceSets {
+	main {
+		resources {
+			srcDirs = ['src/main/resources']
+		}
+	}
 }

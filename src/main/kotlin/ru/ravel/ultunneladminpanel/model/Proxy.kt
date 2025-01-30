@@ -9,7 +9,11 @@ data class Proxy (
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	var id: Long? = null,
 
-	var port: String? = null,
+	var useSubDomain: Boolean? = null,
+
+	var port: Long? = null,
+
+	var subdomain: String? = null,
 
 	var login: String? = null,
 

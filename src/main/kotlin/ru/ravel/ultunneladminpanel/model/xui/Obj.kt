@@ -16,4 +16,5 @@ data class Obj(
 	val streamSettings: String? = null,
 	val tag: String? = null,
 	val sniffing: String? = null,
+	val allocate: String? = null,
 )

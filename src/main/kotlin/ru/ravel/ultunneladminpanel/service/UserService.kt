@@ -1,21 +1,21 @@
 package ru.ravel.ultunneladminpanel.service
 
+import jakarta.transaction.Transactional
 import org.springframework.stereotype.Service
 import ru.ravel.ultunneladminpanel.dto.UserProxyTypeHost
 import ru.ravel.ultunneladminpanel.model.User
-import ru.ravel.ultunneladminpanel.model.UsersProxy
-import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
-import ru.ravel.ultunneladminpanel.repository.UserProxyRepository
-import ru.ravel.ultunneladminpanel.repository.UserRepository
+import ru.ravel.ultunneladminpanel.model.config.ConfigData
+import ru.ravel.ultunneladminpanel.repository.*
 import java.time.ZonedDateTime
 
 
 @Service
 class UserService(
-	val userRepository: UserRepository,
-	val userProxyRepository: UserProxyRepository,
-	val proxyServerRepository: ProxyServerRepository,
-	val proxyServerService: ProxyServerService,
+	private val userRepository: UserRepository,
+	private val proxyServerRepository: ProxyServerRepository,
+	private val proxyServerService: ProxyServerService,
+	private val proxyRepository: ProxyRepository,
+	private val configDataRepository: ConfigDataRepository,
 ) {
 
 	fun addNewUser(user: User): User {
@@ -32,31 +32,31 @@ class UserService(
 	}
 
 
-	fun addProxyToUser(userProxyTypeHost: UserProxyTypeHost): UsersProxy? {
+	@Transactional
+	fun addProxyToUser(userProxyTypeHost: UserProxyTypeHost): ConfigData? {
 		val user = userRepository.findById(userProxyTypeHost.userId).orElseThrow()
 		val proxyServer = proxyServerRepository.findById(userProxyTypeHost.proxyServerId).orElseThrow()
-		val usersProxy = proxyServer
+		val configData = proxyServer
 			?.proxies
 			?.find { it.type == userProxyTypeHost.type }
 			?.let { proxy ->
-				val connectionData = proxyServerService.createUserProxy(proxyServer.host!!, proxy, user)
-				val usersProxy = UsersProxy(connectionData = connectionData)
-				userProxyRepository.save(usersProxy)
-				user.proxies.add(usersProxy)
+				val configData = proxyServerService.createUserProxy(proxyServer.host!!, proxy, user)
+				user.proxiesConfigs.add(configData)
 				userRepository.save(user)
-				return@let usersProxy
+				return@let configData
 			}
-		return usersProxy
+		return configData
 	}
 
-}
-
-
-fun generateSecretKey(): String {
-	val allCharacters: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	val password = StringBuilder()
-	for (i in 0..20) {
-		password.append(allCharacters.random())
+	companion object {
+		fun generateSecretKey(): String {
+			val allCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+			val password = StringBuilder()
+			for (i in 0..20) {
+				password.append(allCharacters.random())
+			}
+			return password.toList().shuffled().joinToString("")
+		}
 	}
-	return password.toList().shuffled().joinToString("")
+
 }

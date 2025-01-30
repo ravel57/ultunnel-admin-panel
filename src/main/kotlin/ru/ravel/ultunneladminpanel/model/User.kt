@@ -1,6 +1,7 @@
 package ru.ravel.ultunneladminpanel.model
 
 import jakarta.persistence.*
+import ru.ravel.ultunneladminpanel.model.config.ConfigData
 import java.time.ZonedDateTime
 
 
@@ -11,15 +12,13 @@ data class User(
 	@GeneratedValue(strategy = GenerationType.IDENTITY)
 	var id: Long? = null,
 
+	@Column(unique = true)
 	var name: String? = null,
 
 	var secretKey: String? = null,
 
-	@OneToMany(
-		cascade = [(CascadeType.ALL)],
-		fetch = FetchType.EAGER,
-	)
-	var proxies: MutableList<UsersProxy> = mutableListOf(),
+	@OneToMany(cascade = [CascadeType.ALL], fetch = FetchType.EAGER)
+	var proxiesConfigs: MutableList<ConfigData> = mutableListOf(),
 
 	var isEnabled: Boolean? = null,
 

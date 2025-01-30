@@ -1,5 +1,6 @@
 package ru.ravel.ultunneladminpanel.service
 
+import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import org.springframework.stereotype.Service
@@ -21,9 +22,9 @@ class SshService {
 			session.setConfig(config)
 			session.connect()
 			val channel = session.openChannel("exec")
-			val password = generateSecretKey()
+			val password = UserService.generateSecretKey()
 			val command = "useradd ${user.name} --no-create-home --no-user-group --shell /usr/sbin/nologin --password \"\$(openssl passwd -6 ${password})\""
-			(channel as com.jcraft.jsch.ChannelExec).setCommand(command)
+			(channel as ChannelExec).setCommand(command)
 			val inputStream = channel.inputStream
 			channel.connect()
 			inputStream.bufferedReader().use { it.readText() }
