@@ -8,7 +8,6 @@ import jakarta.persistence.*
 @Entity
 @Inheritance(strategy = InheritanceType.JOINED)
 @DiscriminatorColumn(name = "config_type", discriminatorType = DiscriminatorType.STRING)
-//@MappedSuperclass
 abstract class ConfigData(
 
 	@Id
@@ -16,13 +15,15 @@ abstract class ConfigData(
 	@JsonIgnore
 	var id: Long? = null,
 
-	@JsonProperty("type")
 	@Column(nullable = false)
 	var type: String? = null,
 
-	@JsonProperty("server")
 	@Column(nullable = false)
 	var server: String? = null,
+
+	@Column(nullable = false)
+	@JsonIgnore
+	var serverName: String? = null,
 
 ) {
 	abstract fun fillFields(): ConfigData

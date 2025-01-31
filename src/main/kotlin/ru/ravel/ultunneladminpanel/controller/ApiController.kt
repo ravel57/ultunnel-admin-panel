@@ -1,5 +1,6 @@
 package ru.ravel.ultunneladminpanel.controller
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
@@ -8,6 +9,7 @@ import ru.ravel.ultunneladminpanel.model.Proxy
 import ru.ravel.ultunneladminpanel.model.ProxyServer
 import ru.ravel.ultunneladminpanel.model.User
 import ru.ravel.ultunneladminpanel.model.config.ConfigTemplate
+import ru.ravel.ultunneladminpanel.model.config.ConfigTemplateWithServers
 import ru.ravel.ultunneladminpanel.service.ProxyServerService
 import ru.ravel.ultunneladminpanel.service.UserService
 
@@ -78,13 +80,21 @@ class ApiController(
 		@RequestParam secretKey: String,
 		response: HttpServletResponse,
 	): ResponseEntity<Any> {
-		val configData = proxyServerService.getProxyServer(secretKey)
-		val configTemplate = configData.map { ConfigTemplate().getConfig(it) }
+		val configTemplateWithServers = proxyServerService.getProxyServer(secretKey)
+			.groupBy { it.serverName }
+			.map { (serverName, configs) ->
+				val strings = configs.map { config ->
+					ConfigTemplate().getConfig(config)
+				}
+				val configTemplateWithServers = ConfigTemplateWithServers(serverName ?: "null", strings)
+				return@map ObjectMapper().writeValueAsString(configTemplateWithServers)
+			}
+
 		val filename = "configs.json"
 		response.contentType = "application/json"
 		response.setHeader("Content-Disposition", "attachment; filename=\"$filename\"")
 		response.outputStream.use { output ->
-			output.write("[${configTemplate.joinToString(",\n")}]".toByteArray())
+			output.write("[${configTemplateWithServers.joinToString(",\n")}]".toByteArray())
 		}
 		return ResponseEntity.ok().build()
 	}

@@ -1,0 +1,28 @@
+version: "3"
+services:
+  postgres:
+    image: postgres:14.1-alpine
+    restart: unless-stopped
+    hostname: postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    expose:
+      - 5432
+  webapp:
+    build: .
+    restart: unless-stopped
+    links:
+      - postgres:postgres
+    ports:
+      - '56485:8081'
+    expose:
+      - 56485
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/
+
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1450

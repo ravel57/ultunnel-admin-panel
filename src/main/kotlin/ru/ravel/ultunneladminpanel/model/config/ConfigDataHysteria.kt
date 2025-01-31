@@ -15,7 +15,7 @@ data class ConfigDataHysteria(
 	@JsonIgnore
 	override var id: Long? = null,
 
-	override var type: String? = "hysteria",
+	override var type: String? = "hysteria2",
 
 	@JsonProperty("down_mbps")
 	@Transient
@@ -41,7 +41,7 @@ data class ConfigDataHysteria(
 
 	@Transient
 	var tag: String? = type?.lowercase(),
-) : ConfigData(id = id, type = "vless", server = server) {
+) : ConfigData(id = id, type = type, server = server) {
 	override fun fillFields(): ConfigDataHysteria {
 		this.server = super.server
 		this.type = super.type

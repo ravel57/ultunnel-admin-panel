@@ -29,7 +29,6 @@ class ProxyServerService(
 	private val proxyServerRepository: ProxyServerRepository,
 	private val proxyRepository: ProxyRepository,
 	private val userRepository: UserRepository,
-	private val configDataRepository: ConfigDataRepository,
 ) {
 
 	fun addNewServer(proxyServer: ProxyServer): ProxyServer {
@@ -47,7 +46,7 @@ class ProxyServerService(
 
 
 	fun addProxyToServer(proxyServerId: Long, proxy: Proxy): Proxy {
-		val proxyServer = proxyServerRepository.findById(proxyServerId).orElseThrow().apply {
+		val proxyServer = proxyServerRepository.findById(proxyServerId).orElseThrow().also {
 			proxyRepository.save(proxy)
 		}
 		proxyServer?.proxies?.add(proxy)
@@ -96,15 +95,12 @@ class ProxyServerService(
 					.post(body)
 					.build()
 				createUnsafeOkHttpClient().newCall(request).execute()
-//				return "${protocol}://${uuid}@${host}:${port}?type=tcp&security=none"
-				val configDataVless = ConfigDataVless(
+				return ConfigDataVless(
 					type = protocol,
 					uuid = uuid,
 					server = host,
 					serverPort = port!!,
 				)
-				configDataRepository.save(configDataVless)
-				return configDataVless
 			}
 
 			HYSTERIA -> {
@@ -144,27 +140,23 @@ class ProxyServerService(
 				response = createUnsafeOkHttpClient().newCall(request).execute()
 				val hysteriaUser = ObjectMapper().readValue(response.body.string(), HysteriaUser::class.java)
 //				return "${protocol}://${uuid}@${host}:${port}?type=tcp&security=none"
-				val configDataHysteria = ConfigDataHysteria(
+				return ConfigDataHysteria(
 					type = proxy.type!!.name.lowercase(),
 					password = "${hysteriaUser.name}:${hysteriaUser.password}",
 					server = host,
 					serverPort = proxy.port!!,
 				)
-				configDataRepository.save(configDataHysteria)
-				return configDataHysteria
 			}
 
 			SSH -> {
 				val password = sshService.addNewUser(proxy, host, user)
 //				return "ssh://${user.name}:${password}@${host}:${proxy.port}"
-				val configDataSsh = ConfigDataSsh(
+				return ConfigDataSsh(
 					server = host,
 					serverPort = proxy.port!!,
 					password = password,
 					user = user.name!!,
 				)
-				configDataRepository.save(configDataSsh)
-				return configDataSsh
 			}
 
 			WIREGUARD, AMNEZIA_WIREGUARD -> {
@@ -188,9 +180,7 @@ class ProxyServerService(
 				val file = File("vpn.conf")
 				val config = file.readText().trim()
 				file.delete()
-				val configDataWireguard = WireguardConfigParser.parseConfig(config, host)
-				configDataRepository.save(configDataWireguard)
-				return configDataWireguard
+				return WireguardConfigParser.parseConfig(config, host)
 			}
 		}
 	}

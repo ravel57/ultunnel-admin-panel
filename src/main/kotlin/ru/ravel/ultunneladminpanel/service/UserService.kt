@@ -41,6 +41,8 @@ class UserService(
 			?.find { it.type == userProxyTypeHost.type }
 			?.let { proxy ->
 				val configData = proxyServerService.createUserProxy(proxyServer.host!!, proxy, user)
+				configData.serverName = proxyServer.name
+				configDataRepository.save(configData)
 				user.proxiesConfigs.add(configData)
 				userRepository.save(user)
 				return@let configData
