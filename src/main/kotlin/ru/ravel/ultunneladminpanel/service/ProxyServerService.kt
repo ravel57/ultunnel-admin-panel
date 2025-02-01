@@ -10,12 +10,17 @@ import org.megoru.io.UnsuccessfulHttpException
 import org.springframework.stereotype.Service
 import ru.ravel.ultunneladminpanel.component.createUnsafeOkHttpClient
 import ru.ravel.ultunneladminpanel.dto.HysteriaUser
-import ru.ravel.ultunneladminpanel.model.*
+import ru.ravel.ultunneladminpanel.dto.Username
+import ru.ravel.ultunneladminpanel.model.Proxy
+import ru.ravel.ultunneladminpanel.model.ProxyServer
 import ru.ravel.ultunneladminpanel.model.ProxyType.*
-import ru.ravel.ultunneladminpanel.model.config.*
+import ru.ravel.ultunneladminpanel.model.User
+import ru.ravel.ultunneladminpanel.model.config.ConfigData
+import ru.ravel.ultunneladminpanel.model.config.ConfigDataHysteria
+import ru.ravel.ultunneladminpanel.model.config.ConfigDataSsh
+import ru.ravel.ultunneladminpanel.model.config.ConfigDataVless
 import ru.ravel.ultunneladminpanel.model.xui.Root
 import ru.ravel.ultunneladminpanel.model.xui.ThreeXuiType
-import ru.ravel.ultunneladminpanel.repository.ConfigDataRepository
 import ru.ravel.ultunneladminpanel.repository.ProxyRepository
 import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
 import ru.ravel.ultunneladminpanel.repository.UserRepository
@@ -57,12 +62,16 @@ class ProxyServerService(
 
 	@Transactional
 	fun createUserProxy(host: String, proxy: Proxy, user: User): ConfigData {
+		val objectMapper = ObjectMapper()
 		when (proxy.type!!) {
 			THREEX_UI -> {
 				var json = "{\"username\":\"${proxy.login}\",\"password\":\"${proxy.password}\"}"
 				var body = json.toRequestBody("application/json".toMediaType())
-				val url =
-					if (proxy.useSubDomain!!) "https://${proxy.subdomain}.${host}" else "https://${host}:${proxy.port}"
+				val url = if (proxy.useSubDomain!!) {
+					"https://${proxy.subdomain}.${host}"
+				} else {
+					"https://${host}:${proxy.port}"
+				}
 				var request = Request.Builder()
 					.header("Content-Type", "application/json")
 					.url("${url}/login")
@@ -78,7 +87,7 @@ class ProxyServerService(
 					.build()
 				response = createUnsafeOkHttpClient().newCall(request).execute()
 				val string = response.body.string()
-				val readValue = ObjectMapper().readValue(string, Root::class.java)
+				val readValue = objectMapper.readValue(string, Root::class.java)
 				val protocol = ThreeXuiType.VLESS.name.lowercase()
 				val port = readValue.obj?.last { it.protocol == protocol }?.port
 				val id = readValue.obj?.last { it.protocol == protocol }?.id
@@ -104,47 +113,36 @@ class ProxyServerService(
 			}
 
 			HYSTERIA -> {
-				var json = "{\"password\":\"${proxy.password}\"}"
-				var body = json.toRequestBody("application/json".toMediaType())
-				val url =
-					if (proxy.useSubDomain!!) "https://${proxy.subdomain}.${host}"
-					else "https://${host}:${proxy.port}"
-				var request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/login")
-					.post(body)
-					.header("Connection", "close")
-					.build()
-				val execute = createUnsafeOkHttpClient().newCall(request).execute()
-				val cooke = try {
-					execute.use { it.headers["Cookie"] }
-				} catch (e: Exception) {
-					execute.headers["Cookie"]
+				val password = Base64.getEncoder().encodeToString(proxy.password?.toByteArray())
+				var body = "".toRequestBody()
+				val url = if (proxy.useSubDomain!!) {
+					"https://${proxy.subdomain}.${host}"
+				} else {
+					"https://${host}:${proxy.port}"
 				}
-				request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/api/v1/users")
-					.header("Cookie", cooke ?: "")
-					.get()
-					.build()
-				var response = createUnsafeOkHttpClient().newCall(request).execute()
-				val readValue = ObjectMapper().readValue(response.body.string(), Root::class.java)
-				json = "{user: \"${user.name}\"}"
-				body = json.toRequestBody("application/json".toMediaType())
-				request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("https://${host}:${proxy.port}/panel/api/inbounds/addClient")
-					.header("Cookie", cooke.toString())
+				var request = Request.Builder()
+					.url("${url}/auth/login?password=${password}")
+					.header("Connection", "keep-alive")
 					.post(body)
 					.build()
-				response = createUnsafeOkHttpClient().newCall(request).execute()
-				val hysteriaUser = ObjectMapper().readValue(response.body.string(), HysteriaUser::class.java)
-//				return "${protocol}://${uuid}@${host}:${port}?type=tcp&security=none"
+				val client = createUnsafeOkHttpClient()
+				client.newCall(request).execute()
+				body = objectMapper.writeValueAsString(Username(user.name!!))
+					.toRequestBody("application/json".toMediaType())
+				request = Request.Builder()
+					.header("Content-Type", "application/json")
+					.url("${url}/api/v1/user")
+					.header("Connection", "keep-alive")
+					.post(body)
+					.build()
+				val response = client.newCall(request).execute()
+				val string = response.body.string()
+				val hysteriaUser = objectMapper.readValue(string, HysteriaUser::class.java)
 				return ConfigDataHysteria(
 					type = proxy.type!!.name.lowercase(),
-					password = "${hysteriaUser.name}:${hysteriaUser.password}",
+					password = "${hysteriaUser.uuid}:${hysteriaUser.password}",
 					server = host,
-					serverPort = proxy.port!!,
+					serverPort = proxy.proxyPort!!,
 				)
 			}
 
@@ -159,7 +157,7 @@ class ProxyServerService(
 				)
 			}
 
-			WIREGUARD, AMNEZIA_WIREGUARD -> {
+			WIREGUARD /*,AMNEZIA_WIREGUARD*/ -> {
 				val url = if (proxy.useSubDomain!!) {
 					"https://${proxy.subdomain}.${host}"
 				} else {

@@ -18,6 +18,10 @@ class UserService(
 	private val configDataRepository: ConfigDataRepository,
 ) {
 
+	fun getAllUsers(): List<User> {
+		return userRepository.findAll()
+	}
+
 	fun addNewUser(user: User): User {
 		user.secretKey = generateSecretKey()
 		user.isEnabled = true

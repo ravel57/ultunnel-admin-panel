@@ -45,6 +45,12 @@ class ApiController(
 	}
 
 
+	@PostMapping("/get-all-users")
+	fun getAllUsers(): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(userService.getAllUsers())
+	}
+
+
 	@PostMapping("/add-new-user")
 	fun addNewUser(
 		@RequestBody user: User,
@@ -89,7 +95,6 @@ class ApiController(
 				val configTemplateWithServers = ConfigTemplateWithServers(serverName ?: "null", strings)
 				return@map ObjectMapper().writeValueAsString(configTemplateWithServers)
 			}
-
 		val filename = "configs.json"
 		response.contentType = "application/json"
 		response.setHeader("Content-Disposition", "attachment; filename=\"$filename\"")

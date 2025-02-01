@@ -21,4 +21,6 @@ data class Proxy (
 
 	@Enumerated(EnumType.STRING)
 	var type: ProxyType? = null,
+
+	var proxyPort: Long? = null,
 )

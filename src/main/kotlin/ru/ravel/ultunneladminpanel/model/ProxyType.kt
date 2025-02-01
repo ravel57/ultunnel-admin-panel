@@ -5,6 +5,6 @@ enum class ProxyType {
 	HYSTERIA,
 	SSH,
 	WIREGUARD,
-	AMNEZIA_WIREGUARD,
+//	AMNEZIA_WIREGUARD,
 	;
 }
