@@ -31,7 +31,7 @@ class UserService(
 		user.secretKey = generateSecretKey()
 		user.isEnabled = true
 		user.createdDate = ZonedDateTime.now()
-		user.nextPaymentDate = user.createdDate?.plusDays(1)
+		user.nextPaymentDate = user.createdDate?.plusYears(1)
 		userRepository.save(user)
 		return user
 	}
