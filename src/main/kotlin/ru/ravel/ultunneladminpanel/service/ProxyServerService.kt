@@ -116,7 +116,7 @@ class ProxyServerService(
 				)
 			}
 
-			HYSTERIA -> {
+			HYSTERIA2 -> {
 				val password = Base64.getEncoder().encodeToString(proxy.password?.toByteArray())
 				var body = "".toRequestBody()
 				val url = if (proxy.useSubDomain!!) {
@@ -142,10 +142,14 @@ class ProxyServerService(
 				val response = client.newCall(request).execute()
 				val string = response.body.string()
 				val hysteriaUser = objectMapper.readValue(string, HysteriaUser::class.java)
+				val hysteriaHost = if (proxy.useSubDomain!!) {
+					"${proxy.subdomain}.${host}"
+				} else {
+					host
+				}
 				return ConfigDataHysteria(
-					type = proxy.type!!.name.lowercase(),
 					password = "${hysteriaUser.uuid}:${hysteriaUser.password}",
-					server = host,
+					server = hysteriaHost,
 					serverPort = proxy.proxyPort!!,
 				)
 			}

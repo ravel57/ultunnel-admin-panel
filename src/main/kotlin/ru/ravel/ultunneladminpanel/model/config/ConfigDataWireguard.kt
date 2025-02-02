@@ -14,7 +14,7 @@ class ConfigDataWireguard(
 
 	override var type: String? = "wireguard",
 
-	var tag: String? = "wireguard",
+	var tag: String? = type?.lowercase(),
 
 	override var server: String? = null,
 
@@ -63,6 +63,7 @@ class ConfigDataWireguard(
 	override fun fillFields(): ConfigDataWireguard {
 		this.server = super.server
 		this.type = super.type
+		this.tag = type?.lowercase()
 		return this
 	}
 }

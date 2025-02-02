@@ -2,7 +2,7 @@ package ru.ravel.ultunneladminpanel.model
 
 enum class ProxyType {
 	VLESS,
-	HYSTERIA,
+	HYSTERIA2,
 	SSH,
 	WIREGUARD,
 //	AMNEZIA_WIREGUARD,

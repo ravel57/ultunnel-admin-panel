@@ -45,6 +45,8 @@ data class ConfigDataHysteria(
 	override fun fillFields(): ConfigDataHysteria {
 		this.server = super.server
 		this.type = super.type
+		this.tag = type?.lowercase()
+		this.tls = Tls(alpn = listOf("h3"), enabled = true, insecure = true)
 		return this
 	}
 }

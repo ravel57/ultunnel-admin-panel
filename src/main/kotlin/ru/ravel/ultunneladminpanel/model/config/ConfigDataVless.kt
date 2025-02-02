@@ -34,6 +34,7 @@ data class ConfigDataVless(
 	override fun fillFields(): ConfigDataVless {
 		this.server = super.server
 		this.type = super.type
+		this.tag = "proxy"
 		return this
 	}
 }
