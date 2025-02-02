@@ -1,7 +1,7 @@
 package ru.ravel.ultunneladminpanel.model
 
 enum class ProxyType {
-	THREEX_UI,
+	VLESS,
 	HYSTERIA,
 	SSH,
 	WIREGUARD,

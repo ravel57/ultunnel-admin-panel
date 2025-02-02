@@ -22,5 +22,7 @@ data class User(
 
 	var isEnabled: Boolean? = null,
 
-	var createdDate: ZonedDateTime? = null
+	var createdDate: ZonedDateTime? = null,
+
+	var nextPaymentDate: ZonedDateTime? = null,
 )

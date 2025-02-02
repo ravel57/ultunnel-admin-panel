@@ -16,10 +16,16 @@ import ru.ravel.ultunneladminpanel.service.UserService
 
 @RestController
 @RequestMapping("/api/v1")
+@CrossOrigin
 class ApiController(
 	val proxyServerService: ProxyServerService,
 	val userService: UserService,
 ) {
+
+	@GetMapping("/get-all-servers")
+	fun getAllServers(): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(proxyServerService.getAllServers())
+	}
 
 	@PostMapping("/add-new-server")
 	fun addServer(
@@ -45,7 +51,7 @@ class ApiController(
 	}
 
 
-	@PostMapping("/get-all-users")
+	@GetMapping("/get-all-users")
 	fun getAllUsers(): ResponseEntity<Any> {
 		return ResponseEntity.ok().body(userService.getAllUsers())
 	}

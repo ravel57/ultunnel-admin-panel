@@ -19,13 +19,19 @@ class UserService(
 ) {
 
 	fun getAllUsers(): List<User> {
-		return userRepository.findAll()
+		return userRepository.findAll().onEach {
+			it?.proxiesConfigs
+				?.map { proxyConfig ->
+					proxyConfig.fillFields()
+				}
+		}
 	}
 
 	fun addNewUser(user: User): User {
 		user.secretKey = generateSecretKey()
 		user.isEnabled = true
 		user.createdDate = ZonedDateTime.now()
+		user.nextPaymentDate = user.createdDate?.plusDays(1)
 		userRepository.save(user)
 		return user
 	}

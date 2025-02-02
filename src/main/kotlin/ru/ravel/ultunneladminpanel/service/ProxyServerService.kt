@@ -36,6 +36,10 @@ class ProxyServerService(
 	private val userRepository: UserRepository,
 ) {
 
+	fun getAllServers(): MutableList<ProxyServer> {
+		return proxyServerRepository.findAll()
+	}
+
 	fun addNewServer(proxyServer: ProxyServer): ProxyServer {
 		proxyServer.proxies?.forEach {
 			proxyRepository.save(it)
@@ -64,7 +68,7 @@ class ProxyServerService(
 	fun createUserProxy(host: String, proxy: Proxy, user: User): ConfigData {
 		val objectMapper = ObjectMapper()
 		when (proxy.type!!) {
-			THREEX_UI -> {
+			VLESS -> {
 				var json = "{\"username\":\"${proxy.login}\",\"password\":\"${proxy.password}\"}"
 				var body = json.toRequestBody("application/json".toMediaType())
 				val url = if (proxy.useSubDomain!!) {
@@ -151,7 +155,7 @@ class ProxyServerService(
 //				return "ssh://${user.name}:${password}@${host}:${proxy.port}"
 				return ConfigDataSsh(
 					server = host,
-					serverPort = proxy.port!!,
+					serverPort = proxy.proxyPort!!,
 					password = password,
 					user = user.name!!,
 				)
@@ -185,10 +189,11 @@ class ProxyServerService(
 
 
 	fun getProxyServer(secretKey: String): List<ConfigData> {
-		val usersProxies = userRepository.findBySecretKey(secretKey)
-		return usersProxies?.proxiesConfigs?.map {
-			it.fillFields()
-		}
+		return userRepository.findBySecretKey(secretKey)
+			?.proxiesConfigs
+			?.map {
+				it.fillFields()
+			}
 			?: emptyList()
 	}
 
