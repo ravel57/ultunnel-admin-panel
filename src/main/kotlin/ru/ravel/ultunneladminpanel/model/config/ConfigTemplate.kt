@@ -9,19 +9,19 @@ class ConfigTemplate {
 	fun getConfig(configData: ConfigData): String = """
 	  |{
 	  |"log": {
-	  |  "level": "panic"
+	  |    "level": "trace"
 	  |},
 	  |"dns": {
 	  |  "servers": [
 	  |    {
 	  |      "tag": "dns-remote",
-	  |      "address": "https://dns.google/dns-query",
+	  |      "address": "https://1.1.1.1/dns-query",
 	  |      "address_resolver": "dns-direct",
 	  |      "strategy": "ipv4_only"
 	  |    },
 	  |    {
 	  |      "tag": "dns-direct",
-	  |      "address": "local",
+	  |      "address": "8.8.8.8",
 	  |      "address_resolver": "dns-local",
 	  |      "strategy": "ipv4_only",
 	  |      "detour": "direct"
@@ -63,7 +63,7 @@ class ConfigTemplate {
 	  |    "mtu": 9000,
 	  |    "auto_route": true,
 	  |    "endpoint_independent_nat": true,
-	  |    "stack": "mixed",
+	  |    "stack": "system",
 	  |    "sniff": true,
 	  |    "inet4_address": "172.19.0.1/28"
 	  |  },

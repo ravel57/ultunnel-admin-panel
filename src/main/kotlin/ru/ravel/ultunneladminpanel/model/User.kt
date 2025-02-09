@@ -2,7 +2,7 @@ package ru.ravel.ultunneladminpanel.model
 
 import jakarta.persistence.*
 import ru.ravel.ultunneladminpanel.model.config.ConfigData
-import java.time.ZonedDateTime
+import java.time.LocalDate
 
 
 @Entity
@@ -22,7 +22,9 @@ data class User(
 
 	var isEnabled: Boolean? = null,
 
-	var createdDate: ZonedDateTime? = null,
+	var isForFree: Boolean? = null,
 
-	var nextPaymentDate: ZonedDateTime? = null,
+	var createdDate: LocalDate? = null,
+
+	var nextPaymentDate: LocalDate? = null,
 )

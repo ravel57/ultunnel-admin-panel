@@ -5,8 +5,11 @@ import org.springframework.stereotype.Service
 import ru.ravel.ultunneladminpanel.dto.UserProxyTypeHost
 import ru.ravel.ultunneladminpanel.model.User
 import ru.ravel.ultunneladminpanel.model.config.ConfigData
-import ru.ravel.ultunneladminpanel.repository.*
-import java.time.ZonedDateTime
+import ru.ravel.ultunneladminpanel.repository.ConfigDataRepository
+import ru.ravel.ultunneladminpanel.repository.ProxyRepository
+import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
+import ru.ravel.ultunneladminpanel.repository.UserRepository
+import java.time.LocalDate
 
 
 @Service
@@ -28,10 +31,13 @@ class UserService(
 	}
 
 	fun addNewUser(user: User): User {
-		user.secretKey = generateSecretKey()
-		user.isEnabled = true
-		user.createdDate = ZonedDateTime.now()
-		user.nextPaymentDate = user.createdDate?.plusYears(1)
+		with(user) {
+			secretKey = generateSecretKey()
+			isEnabled = true
+			isForFree = false
+			createdDate = LocalDate.now()
+			nextPaymentDate = createdDate!!.plusYears(1)
+		}
 		userRepository.save(user)
 		return user
 	}
