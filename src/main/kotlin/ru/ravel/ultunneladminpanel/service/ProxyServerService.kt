@@ -90,7 +90,7 @@ class ProxyServerService(
 					.get()
 					.build()
 				response = createUnsafeOkHttpClient().newCall(request).execute()
-				val string = response.body.string()
+				val string = response.body?.string()
 				val readValue = objectMapper.readValue(string, Root::class.java)
 				val protocol = ThreeXuiType.VLESS.name.lowercase()
 				val port = readValue.obj?.last { it.protocol == protocol }?.port
@@ -140,7 +140,7 @@ class ProxyServerService(
 					.post(body)
 					.build()
 				val response = client.newCall(request).execute()
-				val string = response.body.string()
+				val string = response.body?.string()
 				val hysteriaUser = objectMapper.readValue(string, HysteriaUser::class.java)
 				val hysteriaHost = if (proxy.useSubDomain!!) {
 					"${proxy.subdomain}.${host}"
@@ -156,7 +156,6 @@ class ProxyServerService(
 
 			SSH -> {
 				val password = sshService.addNewUser(proxy, host, user)
-//				return "ssh://${user.name}:${password}@${host}:${proxy.port}"
 				return ConfigDataSsh(
 					server = host,
 					serverPort = proxy.proxyPort!!,

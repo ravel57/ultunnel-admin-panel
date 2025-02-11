@@ -38,13 +38,13 @@ dependencies {
 	runtimeOnly 'org.postgresql:postgresql'
 
 //	security
-//	implementation 'org.springframework.boot:spring-boot-starter-security'
+	implementation 'org.springframework.boot:spring-boot-starter-security'
 
 //	jackson
 	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin:2.15.0'
 
 //	okhttp
-	implementation 'com.squareup.okhttp3:okhttp'
+	implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
 //	web
 	implementation 'org.springframework.boot:spring-boot-starter-thymeleaf'
