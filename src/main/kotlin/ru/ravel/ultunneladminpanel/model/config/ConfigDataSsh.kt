@@ -25,9 +25,12 @@ data class ConfigDataSsh(
 
 	var password: String,
 ) : ConfigData(id = id, server = server, type = type) {
+
 	override fun fillFields(): ConfigDataSsh {
 		this.server = super.server
 		this.type = super.type
+		this.url = "${type}://${user}:${password}@${server}:${serverPort}"
 		return this
 	}
+
 }

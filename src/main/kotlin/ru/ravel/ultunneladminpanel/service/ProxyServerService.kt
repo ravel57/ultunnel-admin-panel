@@ -164,7 +164,7 @@ class ProxyServerService(
 				)
 			}
 
-			WIREGUARD /*,AMNEZIA_WIREGUARD*/ -> {
+			WIREGUARD, AMNEZIA_WG -> {
 				val url = if (proxy.useSubDomain!!) {
 					"https://${proxy.subdomain}.${host}"
 				} else {

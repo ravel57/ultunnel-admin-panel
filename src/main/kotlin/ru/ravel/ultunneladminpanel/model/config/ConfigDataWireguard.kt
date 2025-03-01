@@ -64,6 +64,7 @@ class ConfigDataWireguard(
 		this.server = super.server
 		this.type = super.type
 		this.tag = type?.lowercase()
+		this.url = ""
 		return this
 	}
 }

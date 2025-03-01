@@ -25,6 +25,8 @@ abstract class ConfigData(
 	@JsonIgnore
 	var serverName: String? = null,
 
+	var url: String? = null,
+
 ) {
 	abstract fun fillFields(): ConfigData
 }

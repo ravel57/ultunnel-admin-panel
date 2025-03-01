@@ -32,9 +32,12 @@ data class ConfigDataVless(
 
 ) : ConfigData(id = id, type = type, server = server) {
 	override fun fillFields(): ConfigDataVless {
+
 		this.server = super.server
 		this.type = super.type
 		this.tag = "proxy"
+		this.url = "${type}://${uuid}@${server}:${serverPort}?type=tcp&security=none"
 		return this
 	}
+
 }

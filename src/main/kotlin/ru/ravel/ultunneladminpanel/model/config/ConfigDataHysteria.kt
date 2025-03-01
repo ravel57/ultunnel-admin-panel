@@ -42,11 +42,14 @@ data class ConfigDataHysteria(
 	@Transient
 	var tag: String? = type?.lowercase(),
 ) : ConfigData(id = id, type = type, server = server) {
+
 	override fun fillFields(): ConfigDataHysteria {
 		this.server = super.server
 		this.type = super.type
 		this.tag = type?.lowercase()
 		this.tls = Tls(alpn = listOf("h3"), enabled = true, insecure = true)
+		this.url = "${type}://${password}@${server}:${serverPort}?insecure=1"
 		return this
 	}
+
 }

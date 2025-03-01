@@ -23,10 +23,9 @@ class UserService(
 
 	fun getAllUsers(): List<User> {
 		return userRepository.findAll().onEach {
-			it?.proxiesConfigs
-				?.map { proxyConfig ->
-					proxyConfig.fillFields()
-				}
+			it?.proxiesConfigs?.map { proxyConfig ->
+				proxyConfig.fillFields()
+			}
 		}
 	}
 
