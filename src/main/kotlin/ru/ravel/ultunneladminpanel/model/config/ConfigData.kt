@@ -1,13 +1,14 @@
 package ru.ravel.ultunneladminpanel.model.config
 
+import com.fasterxml.jackson.annotation.JsonFilter
 import com.fasterxml.jackson.annotation.JsonIgnore
-import com.fasterxml.jackson.annotation.JsonProperty
 import jakarta.persistence.*
 
 
 @Entity
 @Inheritance(strategy = InheritanceType.JOINED)
 @DiscriminatorColumn(name = "config_type", discriminatorType = DiscriminatorType.STRING)
+@JsonFilter("configFilter")
 abstract class ConfigData(
 
 	@Id
@@ -25,7 +26,6 @@ abstract class ConfigData(
 	@JsonIgnore
 	var serverName: String? = null,
 
-	@JsonIgnore
 	var url: String? = null,
 
 ) {

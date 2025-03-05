@@ -20,6 +20,7 @@ import ru.ravel.ultunneladminpanel.service.UserService
 class ApiController(
 	val proxyServerService: ProxyServerService,
 	val userService: UserService,
+	val objectMapper: ObjectMapper,
 ) {
 
 	@GetMapping("/get-all-servers")
@@ -96,10 +97,10 @@ class ApiController(
 			.groupBy { it.serverName }
 			.map { (serverName, configs) ->
 				val strings = configs.map { config ->
-					ConfigTemplate().getConfig(config)
+					ConfigTemplate.getConfig(config)
 				}
 				val configTemplateWithServers = ConfigTemplateWithServers(serverName ?: "null", strings)
-				return@map ObjectMapper().writeValueAsString(configTemplateWithServers)
+				return@map objectMapper.writeValueAsString(configTemplateWithServers)
 			}
 		val filename = "configs.json"
 		response.contentType = "application/json"
