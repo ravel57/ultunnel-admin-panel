@@ -60,6 +60,7 @@ class ConfigDataWireguard(
 	var gso: Boolean? = null
 
 ) : ConfigData(id = id, type = type, server = server) {
+
 	override fun fillFields(): ConfigDataWireguard {
 		this.server = super.server
 		this.type = super.type
@@ -67,4 +68,5 @@ class ConfigDataWireguard(
 		this.url = ""
 		return this
 	}
+
 }

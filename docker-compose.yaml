@@ -9,6 +9,8 @@ services:
       - POSTGRES_PASSWORD=postgres
     expose:
       - 5432
+    ports:
+      - "2345:5432"
   webapp:
     build: .
     restart: unless-stopped

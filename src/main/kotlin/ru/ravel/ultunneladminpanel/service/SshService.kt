@@ -12,18 +12,25 @@ import java.util.*
 @Service
 class SshService {
 
+	fun login(proxy: Proxy, host: String): Session {
+		val jsch = JSch()
+		val session: Session = jsch.getSession(proxy.login, host, proxy.port!!.toInt())
+		session.setPassword(proxy.password)
+		val config = Properties()
+		config["StrictHostKeyChecking"] = "no"
+		session.setConfig(config)
+		session.connect()
+		return session
+	}
+
+
 	fun addNewUser(proxy: Proxy, host: String, user: User): String {
 		try {
-			val jsch = JSch()
-			val session: Session = jsch.getSession(proxy.login, host, proxy.port!!.toInt())
-			session.setPassword(proxy.password)
-			val config = Properties()
-			config["StrictHostKeyChecking"] = "no"
-			session.setConfig(config)
-			session.connect()
+			val session = login(proxy, host)
 			val channel = session.openChannel("exec")
 			val password = UserService.generateSecretKey()
-			val command = "useradd ${user.name} --no-create-home --no-user-group --shell /usr/sbin/nologin --password \"\$(openssl passwd -6 ${password})\""
+			val command =
+				"useradd ${user.name} --no-create-home --no-user-group --shell /usr/sbin/nologin --password \"\$(openssl passwd -6 ${password})\""
 			(channel as ChannelExec).setCommand(command)
 			val inputStream = channel.inputStream
 			channel.connect()

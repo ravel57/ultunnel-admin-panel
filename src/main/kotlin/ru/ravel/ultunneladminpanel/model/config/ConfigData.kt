@@ -25,6 +25,7 @@ abstract class ConfigData(
 	@JsonIgnore
 	var serverName: String? = null,
 
+	@JsonIgnore
 	var url: String? = null,
 
 ) {
