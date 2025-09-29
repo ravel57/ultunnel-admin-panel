@@ -1,5 +1,9 @@
 package ru.ravel.ultunneladminpanel.model.xui
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class Obj(
 	val id: Long? = null,
 	val up: Long? = null,
@@ -17,4 +21,5 @@ data class Obj(
 	val tag: String? = null,
 	val sniffing: String? = null,
 	val allocate: String? = null,
+	val allTime: String? = null,
 )

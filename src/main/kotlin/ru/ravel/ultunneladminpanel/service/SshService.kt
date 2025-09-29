@@ -29,8 +29,10 @@ class SshService {
 			val session = login(proxy, host)
 			val channel = session.openChannel("exec")
 			val password = UserService.generateSecretKey()
-			val command =
-				"useradd ${user.name} --no-create-home --no-user-group --shell /usr/sbin/nologin --password \"\$(openssl passwd -6 ${password})\""
+			val command = buildString {
+				append("export PATH=\"\$PATH:/sbin:/usr/sbin:/usr/local/sbin\" \\")
+				append("useradd ${user.name} --no-create-home --no-user-group --shell /usr/sbin/nologin --password \"\$(openssl passwd -6 ${password})\"")
+			}
 			(channel as ChannelExec).setCommand(command)
 			val inputStream = channel.inputStream
 			channel.connect()

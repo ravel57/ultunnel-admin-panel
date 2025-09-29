@@ -31,20 +31,23 @@ class HysteriaService {
 			.post(body)
 			.build()
 		val client = createUnsafeOkHttpClient()
-		client.newCall(request).execute()
-		body = objectMapper.writeValueAsString(Username(user.name!!))
-			.toRequestBody("application/json".toMediaType())
-		request = Request.Builder()
-			.header("Content-Type", "application/json")
-			.url("${url}/api/v1/user")
-			.header("Connection", "keep-alive")
-			.post(body)
-			.build()
-		val response = client.newCall(request).execute()
-		val string = response.body?.string()
-		val hysteriaUser = objectMapper.readValue(string, HysteriaUser::class.java)
-
-		return hysteriaUser
+		val resp = client.newCall(request).execute()
+		if (resp.isSuccessful) {
+			body = objectMapper.writeValueAsString(Username(user.name!!))
+				.toRequestBody("application/json".toMediaType())
+			request = Request.Builder()
+				.header("Content-Type", "application/json")
+				.url("${url}/api/v1/user")
+				.header("Connection", "keep-alive")
+				.post(body)
+				.build()
+			val response = client.newCall(request).execute()
+			val string = response.body?.string()
+			val hysteriaUser = objectMapper.readValue(string, HysteriaUser::class.java)
+			return hysteriaUser
+		} else {
+			throw IllegalStateException("${resp.code} ${resp.message}")
+		}
 	}
 
 }

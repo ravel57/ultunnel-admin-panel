@@ -1,7 +1,9 @@
 package ru.ravel.ultunneladminpanel.dto
 
-import java.util.*
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class HysteriaUser (
 	var name: String? = null,
 	var password: String? = null,

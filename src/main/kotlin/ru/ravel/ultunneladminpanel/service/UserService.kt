@@ -66,11 +66,12 @@ class UserService(
 	}
 
 	companion object {
+		private const val ALL_CHARACTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
 		fun generateSecretKey(): String {
-			val allCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 			val password = StringBuilder()
 			for (i in 0..20) {
-				password.append(allCharacters.random())
+				password.append(ALL_CHARACTERS.random())
 			}
 			return password.toList().shuffled().joinToString("")
 		}

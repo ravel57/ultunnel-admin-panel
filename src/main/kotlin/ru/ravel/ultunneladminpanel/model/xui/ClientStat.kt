@@ -1,5 +1,9 @@
 package ru.ravel.ultunneladminpanel.model.xui
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class ClientStat(
 	val id: Long? = null,
 	val inboundId: Long? = null,
