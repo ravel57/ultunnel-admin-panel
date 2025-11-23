@@ -16,6 +16,7 @@ import ru.ravel.ultunneladminpanel.model.User
 import ru.ravel.ultunneladminpanel.model.config.ConfigData
 import ru.ravel.ultunneladminpanel.model.config.ConfigDataHysteria
 import ru.ravel.ultunneladminpanel.model.config.ConfigDataSsh
+import ru.ravel.ultunneladminpanel.model.config.ConfigDataTrojan
 import ru.ravel.ultunneladminpanel.model.config.ConfigDataVless
 import ru.ravel.ultunneladminpanel.model.xui.Root
 import ru.ravel.ultunneladminpanel.model.xui.ThreeXuiType
@@ -112,6 +113,57 @@ class ProxyServerService(
 					uuid = uuid,
 					server = host,
 					serverPort = port!!,
+				)
+			}
+
+			TROJAN -> {
+				var json = "{\"username\":\"${proxy.login}\",\"password\":\"${proxy.password}\"}"
+				val body = json.toRequestBody("application/json".toMediaType())
+				val url = if (proxy.useSubDomain!!) {
+					"https://${proxy.subdomain}.${host}"
+				} else {
+					"https://${host}:${proxy.port}"
+				}
+				var request = Request.Builder()
+					.header("Content-Type", "application/json")
+					.url("${url}/login")
+					.post(body)
+					.build()
+				var response = createUnsafeOkHttpClient().newCall(request).execute()
+				val cookie = response.headers["Set-Cookie"]
+				request = Request.Builder()
+					.header("Content-Type", "application/json")
+					.url("${url}/panel/api/inbounds/list")
+					.header("Cookie", cookie.toString())
+					.get()
+					.build()
+				response = createUnsafeOkHttpClient().newCall(request).execute()
+				val string = response.body?.string()
+				val readValue = objectMapper.readValue(string, Root::class.java)
+				val protocol = ThreeXuiType.TROJAN.name.lowercase()
+				val port = readValue.obj?.last { it.protocol == protocol }?.port
+				val id = readValue.obj?.last { it.protocol == protocol }?.id
+				val uuid = UUID.randomUUID().toString()
+				json = """{
+					"id": ${id},
+					"settings": "{\"clients\":[{\"id\":\"${uuid}\",\"alterId\":0,\"email\":\"${user.name}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":\"\",\"subId\":\"\"}]}"
+				}"""
+				val body2 = json.toRequestBody("application/json".toMediaType())
+				request = Request.Builder()
+					.header("Content-Type", "application/json")
+					.url("${url}/panel/api/inbounds/addClient")
+					.header("Cookie", cookie.toString())
+					.post(body2)
+					.build()
+				createUnsafeOkHttpClient().newCall(request).execute()
+				val sni = if (proxy.useSubDomain!!) "${proxy.subdomain}.${host}" else host
+				return ConfigDataTrojan(
+					server = host,
+					serverPort = port!!,
+					password = uuid,
+					sni = sni,
+					fp = "chrome",
+					alpn = listOf("h2", "http/1.1")
 				)
 			}
 
