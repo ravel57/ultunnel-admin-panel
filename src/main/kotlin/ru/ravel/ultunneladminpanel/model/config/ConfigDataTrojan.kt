@@ -20,33 +20,58 @@ data class ConfigDataTrojan(
 
 	var tag: String? = "proxy",
 
-	override var server: String?,
+	@JsonIgnore
+	var trojanServer: String? = null,
 
 	@JsonProperty("server_port")
 	var serverPort: Long,
+
 	@JsonProperty("password")
 	var password: String,
 
-	// TLS
-	@JsonProperty("sni")
-	var sni: String = "",
+	@JsonIgnore
+	var sni: String? = null,
 
-	@JsonProperty("alpn")
-	var alpn: List<String> = listOf("h2", "http/1.1"),
+	@JsonIgnore
+	var alpn: List<String>? = listOf("h2", "http/1.1"),
 
-	@JsonProperty("fp")
-	var fp: String = "chrome"
+	@JsonIgnore
+	var fp: String? = "chrome",
 
-) : ConfigData(id = id, type = type, server = server) {
+) : ConfigData(
+	id = id,
+	type = type,
+	server = trojanServer ?: "",
+	serverName = trojanServer
+)
+{
+
+	@JsonProperty("tls")
+	fun tls(): Map<String, Any?> {
+		return mapOf(
+			"enabled" to true,
+			"server_name" to sni,
+			"alpn" to alpn,
+			"utls" to mapOf(
+				"enabled" to true,
+				"fingerprint" to fp
+			)
+		)
+	}
+
 	override fun fillFields(): ConfigDataTrojan {
+		if (this.server.isNullOrBlank()) {
+			throw IllegalStateException("Trojan server is null — ошибка генерации")
+		}
 		this.type = "trojan"
-		this.url =
-			"trojan://${password}@${server}:${serverPort}" +
-					"?type=tcp&security=tls" +
-					"&fp=${fp}" +
-					"&alpn=${alpn.joinToString(",")}" +
-					"&sni=${sni}"
-
+		this.tag = "proxy"
+		this.url = buildString {
+				append("trojan://${password}@${server}:${serverPort}")
+				append("?type=tcp&security=tls")
+				append("&fp=${fp}")
+				append("&alpn=${alpn?.joinToString(",")}")
+				append("&sni=${sni}")
+			}
 		return this
 	}
 

@@ -17,7 +17,6 @@ class UserService(
 	private val userRepository: UserRepository,
 	private val proxyServerRepository: ProxyServerRepository,
 	private val proxyServerService: ProxyServerService,
-	private val proxyRepository: ProxyRepository,
 	private val configDataRepository: ConfigDataRepository,
 ) {
 

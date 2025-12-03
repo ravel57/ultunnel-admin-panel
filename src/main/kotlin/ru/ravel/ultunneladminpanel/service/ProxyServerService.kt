@@ -18,12 +18,18 @@ import ru.ravel.ultunneladminpanel.model.config.ConfigDataHysteria
 import ru.ravel.ultunneladminpanel.model.config.ConfigDataSsh
 import ru.ravel.ultunneladminpanel.model.config.ConfigDataTrojan
 import ru.ravel.ultunneladminpanel.model.config.ConfigDataVless
+import ru.ravel.ultunneladminpanel.model.config.EchSettings
+import ru.ravel.ultunneladminpanel.model.config.TlsSettings
+import ru.ravel.ultunneladminpanel.model.config.TransportSettings
+import ru.ravel.ultunneladminpanel.model.config.UtlsSettings
 import ru.ravel.ultunneladminpanel.model.xui.Root
+import ru.ravel.ultunneladminpanel.model.xui.StreamSettings
 import ru.ravel.ultunneladminpanel.model.xui.ThreeXuiType
 import ru.ravel.ultunneladminpanel.repository.ProxyRepository
 import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
 import ru.ravel.ultunneladminpanel.repository.UserRepository
 import java.io.File
+import java.net.URLEncoder
 import java.util.*
 
 
@@ -93,12 +99,16 @@ class ProxyServerService(
 				val string = response.body?.string()
 				val readValue = objectMapper.readValue(string, Root::class.java)
 				val protocol = ThreeXuiType.VLESS.name.lowercase()
-				val port = readValue.obj?.last { it.protocol == protocol }?.port
-				val id = readValue.obj?.last { it.protocol == protocol }?.id
+				val inbound = readValue.obj?.last { it.protocol == protocol }
+				val port = inbound?.port
+				val id = inbound?.id
+				val stream = objectMapper.readValue(inbound?.streamSettings, StreamSettings::class.java)
+//				val ech = stream.tlsSettings?.settings?.echConfigList ?: ""
+				val sni = stream.tlsSettings?.serverName
 				val uuid = UUID.randomUUID().toString()
 				json = """{
 					"id": ${id},
-					"settings": "{\"clients\":[{\"id\":\"${uuid}\",\"alterId\":0,\"email\":\"${user.name}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":\"\",\"subId\":\"\"}]}"
+					"settings": "{\"clients\":[{\"id\":\"${uuid}\",\"alterId\":0,\"email\":\"${user.name}-vless\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":\"\",\"subId\":\"\"}]}"
 				}"""
 				body = json.toRequestBody("application/json".toMediaType())
 				request = Request.Builder()
@@ -108,17 +118,37 @@ class ProxyServerService(
 					.post(body)
 					.build()
 				createUnsafeOkHttpClient().newCall(request).execute()
+				val server = if (proxy.useSubDomain!!) {
+					"${proxy.subdomain}.${host}"
+				} else {
+					host
+				}
 				return ConfigDataVless(
 					type = protocol,
 					uuid = uuid,
-					server = host,
+					server = server,
 					serverPort = port!!,
+					tls = TlsSettings(
+						enabled = true,
+						serverName = sni ?: host,
+						alpn = stream.tlsSettings?.alpn ?: listOf("h2"),
+						utls = UtlsSettings(
+							enabled = true,
+							fingerprint = "chrome"
+						),
+					),
+					transport = TransportSettings(
+						type = "grpc",
+						serviceName = stream.grpcSettings?.serviceName ?: "GunService",
+						idleTimeout = "15s",
+						pingTimeout = "15s",
+					)
 				)
 			}
 
 			TROJAN -> {
-				var json = "{\"username\":\"${proxy.login}\",\"password\":\"${proxy.password}\"}"
-				val body = json.toRequestBody("application/json".toMediaType())
+				var loginJson = "{\"username\":\"${proxy.login}\",\"password\":\"${proxy.password}\"}"
+				var body = loginJson.toRequestBody("application/json".toMediaType())
 				val url = if (proxy.useSubDomain!!) {
 					"https://${proxy.subdomain}.${host}"
 				} else {
@@ -138,32 +168,33 @@ class ProxyServerService(
 					.get()
 					.build()
 				response = createUnsafeOkHttpClient().newCall(request).execute()
-				val string = response.body?.string()
-				val readValue = objectMapper.readValue(string, Root::class.java)
+				val inboundList = objectMapper.readValue(response.body?.string(), Root::class.java)
 				val protocol = ThreeXuiType.TROJAN.name.lowercase()
-				val port = readValue.obj?.last { it.protocol == protocol }?.port
-				val id = readValue.obj?.last { it.protocol == protocol }?.id
-				val uuid = UUID.randomUUID().toString()
-				json = """{
-					"id": ${id},
-					"settings": "{\"clients\":[{\"id\":\"${uuid}\",\"alterId\":0,\"email\":\"${user.name}\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":\"\",\"subId\":\"\"}]}"
-				}"""
-				val body2 = json.toRequestBody("application/json".toMediaType())
+				val port = inboundList.obj?.last { it.protocol == protocol }?.port!!
+				val id = inboundList.obj.last { it.protocol == protocol }.id!!
+
+				val uuidPassword = UUID.randomUUID().toString()
+				val clientJson = """{
+				  "id": $id,"settings": "{\"clients\":[{\"password\":\"$uuidPassword\",\"email\":\"${user.name}-trojan\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":\"\",\"subId\":\"${proxy.subdomain ?: ""}\",\"comment\":\"\",\"reset\":0}]}"
+				}""".trimIndent()
+
+				body = clientJson.toRequestBody("application/json".toMediaType())
+
 				request = Request.Builder()
 					.header("Content-Type", "application/json")
 					.url("${url}/panel/api/inbounds/addClient")
 					.header("Cookie", cookie.toString())
-					.post(body2)
+					.post(body)
 					.build()
 				createUnsafeOkHttpClient().newCall(request).execute()
-				val sni = if (proxy.useSubDomain!!) "${proxy.subdomain}.${host}" else host
+				val sniHost = if (proxy.useSubDomain == true) "${proxy.subdomain}.${host}" else host
 				return ConfigDataTrojan(
-					server = host,
-					serverPort = port!!,
-					password = uuid,
-					sni = sni,
+					trojanServer = host,
+					serverPort = port,
+					password = uuidPassword,
+					sni = sniHost,
 					fp = "chrome",
-					alpn = listOf("h2", "http/1.1")
+					alpn = listOf("h2")
 				)
 			}
 
@@ -221,9 +252,7 @@ class ProxyServerService(
 	fun getProxyServer(secretKey: String): List<ConfigData> {
 		return userRepository.findBySecretKey(secretKey)
 			?.proxiesConfigs
-			?.map {
-				it.fillFields()
-			}
+			?.map { it.fillFields() }
 			?: emptyList()
 	}
 
