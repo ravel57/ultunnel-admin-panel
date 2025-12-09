@@ -91,13 +91,14 @@ class ApiController(
 	@GetMapping("/get-users-proxy-servers-singbox")
 	fun getUsersProxyServersSingbox(
 		@RequestParam secretKey: String,
+		@RequestParam platform: String = "",
 		response: HttpServletResponse,
 	): ResponseEntity<Any> {
 		val configTemplateWithServers = proxyServerService.getProxyServer(secretKey)
 			.groupBy { it.serverName }
 			.map { (serverName, configs) ->
 				val strings = configs.map { config ->
-					ConfigTemplate.getConfig(config)
+					ConfigTemplate.getConfig(config, platform)
 				}
 				val configTemplateWithServers = ConfigTemplateWithServers(serverName ?: "null", strings)
 				return@map objectMapper.writeValueAsString(configTemplateWithServers)
