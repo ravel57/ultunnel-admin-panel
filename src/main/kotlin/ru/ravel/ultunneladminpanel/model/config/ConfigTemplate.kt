@@ -99,6 +99,73 @@ object ConfigTemplate {
 				""".trimMargin()
 			}
 
+			"ios" -> {
+				"""
+				|{
+				|  "log": {
+				|    "level": "debug"
+				|  },
+				|  "dns": {
+				|    "servers": [
+				|      {
+				|        "type": "udp",
+				|        "tag": "cloudflare",
+				|        "server": "1.1.1.1"
+				|      },
+				|      {
+				|        "type": "udp",
+				|        "tag": "google",
+				|        "server": "8.8.8.8"
+				|      }
+				|    ],
+				|    "final": "cloudflare",
+				|    "strategy": "ipv4_only"
+				|  },
+				|  "inbounds": [
+				|    {
+				|      "type": "tun",
+				|      "tag": "tun-in",
+				|      "auto_route": true,
+				|      "strict_route": false,
+				|      "inet4_address": "198.18.0.1/30",
+				|      "mtu": 1500
+				|    }
+				|  ],
+				|  "outbounds": [
+				|    ${serializedConfigData},
+				|    {
+				|      "type": "direct",
+				|      "tag": "direct"
+				|    },
+				|    {
+				|      "type": "block",
+				|      "tag": "block"
+				|    }
+				|  ],
+				|  "route": {
+				|    "rules": [
+				|      {
+				|        "inbound": [
+				|          "tun-in"
+				|        ],
+				|        "protocol": [
+				|			"dns"
+				|       ],
+				|        "action": "hijack-dns"
+				|      },
+				|      {
+				|        "inbound": [
+				|          "tun-in"
+				|        ],
+				|        "outbound": "proxy"
+				|      }
+				|    ],
+				|    "final": "proxy"
+				|  }
+				|}
+				""".trimMargin()
+			}
+
 			"desktop" -> {
 				"""
 				|{
