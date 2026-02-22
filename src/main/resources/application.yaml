@@ -2,7 +2,6 @@ server.port: 8081
 
 spring:
   application.name: ultunnel-admin-panel
-
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/ultunnel_admin_panel?currentSchema=public}
     username: postgres

@@ -8,8 +8,9 @@ import ru.ravel.ultunneladminpanel.service.SerializationContext
 
 object ConfigTemplate {
 
+	private val mapper: ObjectMapper = ObjectMapper().registerModule(KotlinModule())
+
 	fun serializeConfig(configData: ConfigData, ignoreUrl: Boolean): String {
-		val mapper = ObjectMapper().registerModule(KotlinModule())
 		val filter = if (ignoreUrl) {
 			SimpleBeanPropertyFilter.serializeAllExcept("url")
 		} else {
@@ -34,13 +35,24 @@ object ConfigTemplate {
 				|    "servers": [
 				|      {
 				|        "type": "udp",
-				|        "tag": "cloudflare",
+				|        "tag": "bootstrap",
 				|        "server": "1.1.1.1"
 				|      },
 				|      {
-				|        "type": "udp",
+				|        "type": "https",
+				|        "tag": "cloudflare",
+				|        "server": "cloudflare-dns.com",
+				|        "path": "/dns-query",
+				|        "detour": "proxy",
+				|        "domain_resolver": "bootstrap"
+				|      },
+				|      {
+				|        "type": "https",
 				|        "tag": "google",
-				|        "server": "8.8.8.8"
+				|        "server": "dns.google",
+				|        "path": "/dns-query",
+				|        "detour": "proxy",
+				|        "domain_resolver": "bootstrap"
 				|      }
 				|    ],
 				|    "final": "cloudflare",
@@ -58,7 +70,9 @@ object ConfigTemplate {
 				|        "198.18.0.1/30"
 				|      ],
 				|      "mtu": 1500,
-				|      "endpoint_independent_nat": true
+				|      "endpoint_independent_nat": true,
+				|      "sniff": true,
+				|      "sniff_override_destination": true
 				|    }
 				|  ],
 				|  "outbounds": [
@@ -75,15 +89,15 @@ object ConfigTemplate {
 				|  "route": {
 				|    "auto_detect_interface": true,
 				|    "override_android_vpn": true,
-				|    "default_domain_resolver": "cloudflare",
+				|    "default_domain_resolver": "bootstrap",
 				|    "rules": [
 				|      {
 				|        "inbound": [
 				|          "tun-in"
 				|        ],
 				|        "protocol": [
-				|			  "dns"
-				|       ],
+				|          "dns"
+				|        ],
 				|        "action": "hijack-dns"
 				|      },
 				|      {
