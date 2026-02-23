@@ -1,9 +1,12 @@
 package ru.ravel.ultunneladminpanel.service
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.node.ObjectNode
 import jakarta.transaction.Transactional
+import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.megoru.impl.WgEasyAPI
 import org.megoru.io.UnsuccessfulHttpException
@@ -13,15 +16,9 @@ import ru.ravel.ultunneladminpanel.model.Proxy
 import ru.ravel.ultunneladminpanel.model.ProxyServer
 import ru.ravel.ultunneladminpanel.model.ProxyType.*
 import ru.ravel.ultunneladminpanel.model.User
-import ru.ravel.ultunneladminpanel.model.config.ConfigData
-import ru.ravel.ultunneladminpanel.model.config.ConfigDataHysteria
-import ru.ravel.ultunneladminpanel.model.config.ConfigDataSsh
-import ru.ravel.ultunneladminpanel.model.config.ConfigDataTrojan
-import ru.ravel.ultunneladminpanel.model.config.ConfigDataVless
-import ru.ravel.ultunneladminpanel.model.config.EchSettings
-import ru.ravel.ultunneladminpanel.model.config.TlsSettings
-import ru.ravel.ultunneladminpanel.model.config.TransportSettings
-import ru.ravel.ultunneladminpanel.model.config.UtlsSettings
+import ru.ravel.ultunneladminpanel.model.config.*
+import ru.ravel.ultunneladminpanel.model.sui.SuiInbound
+import ru.ravel.ultunneladminpanel.model.sui.SuiInboundsResponse
 import ru.ravel.ultunneladminpanel.model.xui.Root
 import ru.ravel.ultunneladminpanel.model.xui.StreamSettings
 import ru.ravel.ultunneladminpanel.model.xui.ThreeXuiType
@@ -30,6 +27,7 @@ import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
 import ru.ravel.ultunneladminpanel.repository.UserRepository
 import java.io.File
 import java.net.URLEncoder
+import java.nio.charset.StandardCharsets.UTF_8
 import java.util.*
 
 
@@ -187,7 +185,11 @@ class ProxyServerService(
 					.post(body)
 					.build()
 				createUnsafeOkHttpClient().newCall(request).execute()
-				val sniHost = if (proxy.useSubDomain == true) "${proxy.subdomain}.${host}" else host
+				val sniHost = if (proxy.useSubDomain == true) {
+					"${proxy.subdomain}.${host}"
+				} else {
+					host
+				}
 				return ConfigDataTrojan(
 					trojanServer = host,
 					serverPort = port,
@@ -244,6 +246,99 @@ class ProxyServerService(
 				val config = file.readText().trim()
 				file.delete()
 				return WireguardConfigParser.parseConfig(config, host)
+			}
+
+			NAIVE -> {
+				val loginBody: RequestBody = FormBody.Builder()
+					.add("user", proxy.login!!)
+					.add("pass", proxy.password!!)
+					.build()
+				val url = if (proxy.useSubDomain!!) {
+					"https://${proxy.subdomain}.${host}"
+				} else {
+					"https://${host}:${proxy.port}"
+				}
+				var request = Request.Builder()
+					.header("Content-Type", "application/json")
+					.url("${url}/api/login")
+					.post(loginBody)
+					.build()
+				var response = createUnsafeOkHttpClient().newCall(request).execute()
+				val cooke = response.headers["Set-Cookie"]
+				request = Request.Builder()
+					.header("Content-Type", "application/json")
+					.url("${url}/api/inbounds")
+					.header("Cookie", cooke.toString())
+					.get()
+					.build()
+				response = createUnsafeOkHttpClient().newCall(request).execute()
+				var string = response.body?.string()
+				val readValueInbounds = objectMapper.readValue(string, ObjectNode::class.java)
+				val count = readValueInbounds.get("obj").get("inbounds").size()
+				var inbound: SuiInbound? = null
+				for (i in 0 until count) {
+					request = Request.Builder()
+						.header("Content-Type", "application/json")
+						.url("${url}/api/inbounds?id=${i + 1}")
+						.header("Cookie", cooke.toString())
+						.get()
+						.build()
+					response = createUnsafeOkHttpClient().newCall(request).execute()
+					val string = response.body?.string()
+					val readValueInbounds = objectMapper.readValue(string, SuiInboundsResponse::class.java)
+					val first = readValueInbounds.obj?.inbounds?.first()
+					if (first?.type?.equals("naive", ignoreCase = true) == true) {
+						inbound = first
+						break
+					}
+				}
+				val port = inbound?.listen_port?.toLong()
+				val id = inbound?.id
+				val sni = inbound?.addrs?.first()?.server!!
+				val password = UserService.generateSecretKey()
+
+				fun enc(s: String): String = URLEncoder.encode(s, UTF_8.name())
+
+				val json = """{
+				  "enable": true,
+				  "name": "${user.name}",
+				  "config": {
+					"naive": {
+					  "username": "${user.name}",
+					  "password": "$password"
+					}
+				  },
+				  "inbounds": ${listOf(id).joinToString(prefix = "[", postfix = "]")},
+				  "links": [],
+				  "volume": 0,
+				  "expiry": 0,
+				  "up": 0,
+				  "down": 0,
+				  "desc": "",
+				  "group": ""
+				}"""
+				val newUserBody = FormBody.Builder()
+					.add("object", "clients")
+					.add("action", "new")
+					.addEncoded("data", enc(json))
+					.build()
+				request = Request.Builder()
+					.header("Content-Type", "application/json")
+					.url("${url}/api/save")
+					.header("Cookie", cooke.toString())
+					.post(newUserBody)
+					.build()
+				createUnsafeOkHttpClient().newCall(request).execute()
+				return ConfigDataNaive(
+					server = sni,
+					serverPort = port!!,
+					username = user.name!!,
+					password = password,
+					tls = TlsSettings(
+						enabled = true,
+						serverName = sni,
+					)
+				)
 			}
 		}
 	}

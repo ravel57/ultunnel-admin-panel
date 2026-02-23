@@ -7,5 +7,6 @@ enum class ProxyType {
 	SSH,
 	WIREGUARD,
 	AMNEZIA_WG,
+	NAIVE,
 	;
 }

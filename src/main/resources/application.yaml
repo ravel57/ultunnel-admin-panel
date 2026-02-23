@@ -16,7 +16,3 @@ spring:
     suffix: .html
     mode: HTML
     cache: false
-
-auth:
-  login: ${AUTH_LOGIN:admin}
-  password: ${AUTH_PASSWORD:admin}
