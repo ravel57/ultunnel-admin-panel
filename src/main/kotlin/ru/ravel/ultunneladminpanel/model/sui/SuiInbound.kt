@@ -1,5 +1,9 @@
 package ru.ravel.ultunneladminpanel.model.sui
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class SuiInbound(
 	val addrs: List<SuiInboundAddr>? = null,
 	val id: Long? = null,

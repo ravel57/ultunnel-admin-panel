@@ -32,31 +32,22 @@ object ConfigTemplate {
 				|    "level": "debug"
 				|  },
 				|  "dns": {
+				|    "strategy": "ipv4_only",
+				|    "final": "remote-dns",
 				|    "servers": [
 				|      {
-				|        "type": "udp",
-				|        "tag": "bootstrap",
-				|        "server": "1.1.1.1"
-				|      },
-				|      {
+				|        "tag": "remote-dns",
 				|        "type": "https",
-				|        "tag": "cloudflare",
-				|        "server": "cloudflare-dns.com",
+				|        "server": "1.1.1.1",
+				|        "server_port": 443,
 				|        "path": "/dns-query",
-				|        "detour": "proxy",
-				|        "domain_resolver": "bootstrap"
-				|      },
-				|      {
-				|        "type": "https",
-				|        "tag": "google",
-				|        "server": "dns.google",
-				|        "path": "/dns-query",
-				|        "detour": "proxy",
-				|        "domain_resolver": "bootstrap"
+				|        "tls": {
+				|          "enabled": true,
+				|          "server_name": "cloudflare-dns.com"
+				|        },
+				|        "detour": "proxy"
 				|      }
-				|    ],
-				|    "final": "cloudflare",
-				|    "strategy": "ipv4_only"
+				|    ]
 				|  },
 				|  "inbounds": [
 				|    {
@@ -69,10 +60,8 @@ object ConfigTemplate {
 				|      "address": [
 				|        "198.18.0.1/30"
 				|      ],
-				|      "mtu": 1500,
-				|      "endpoint_independent_nat": true,
-				|      "sniff": true,
-				|      "sniff_override_destination": true
+				|      "mtu": 1360,
+				|      "endpoint_independent_nat": true
 				|    }
 				|  ],
 				|  "outbounds": [
@@ -89,21 +78,23 @@ object ConfigTemplate {
 				|  "route": {
 				|    "auto_detect_interface": true,
 				|    "override_android_vpn": true,
-				|    "default_domain_resolver": "bootstrap",
+				|    "default_domain_resolver": "remote-dns",
 				|    "rules": [
 				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
-				|        "protocol": [
-				|          "dns"
-				|        ],
+				|        "inbound": ["tun-in"],
+				|        "action": "sniff"
+				|      },
+				|      {
+				|        "protocol": ["dns"],
 				|        "action": "hijack-dns"
 				|      },
 				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
+				|        "inbound": ["tun-in"],
+				|        "network": ["udp"],
+				|        "action": "reject"
+				|      },
+				|      {
+				|        "inbound": ["tun-in"],
 				|        "outbound": "proxy"
 				|      }
 				|    ],
@@ -120,29 +111,36 @@ object ConfigTemplate {
 				|    "level": "debug"
 				|  },
 				|  "dns": {
+				|    "strategy": "ipv4_only",
+				|    "final": "remote-dns",
 				|    "servers": [
 				|      {
-				|        "type": "udp",
-				|        "tag": "cloudflare",
-				|        "server": "1.1.1.1"
-				|      },
-				|      {
-				|        "type": "udp",
-				|        "tag": "google",
-				|        "server": "8.8.8.8"
+				|        "tag": "remote-dns",
+				|        "type": "https",
+				|        "server": "1.1.1.1",
+				|        "server_port": 443,
+				|        "path": "/dns-query",
+				|        "tls": {
+				|          "enabled": true,
+				|          "server_name": "cloudflare-dns.com"
+				|        },
+				|        "detour": "proxy"
 				|      }
-				|    ],
-				|    "final": "cloudflare",
-				|    "strategy": "ipv4_only"
+				|    ]
 				|  },
 				|  "inbounds": [
 				|    {
 				|      "type": "tun",
 				|      "tag": "tun-in",
+				|      "interface_name": "tun0",
 				|      "auto_route": true,
-				|      "strict_route": false,
-				|      "inet4_address": "198.18.0.1/30",
-				|      "mtu": 1500
+				|      "strict_route": true,
+				|      "stack": "gvisor",
+				|      "address": [
+				|        "198.18.0.1/30"
+				|      ],
+				|      "mtu": 1360,
+				|      "endpoint_independent_nat": true
 				|    }
 				|  ],
 				|  "outbounds": [
@@ -157,20 +155,26 @@ object ConfigTemplate {
 				|    }
 				|  ],
 				|  "route": {
+				|    "auto_detect_interface": true,
+				|    "default_domain_resolver": {
+				|      "server": "remote-dns"
+				|    },
 				|    "rules": [
 				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
-				|        "protocol": [
-				|			"dns"
-				|       ],
+				|        "inbound": ["tun-in"],
+				|        "action": "sniff"
+				|      },
+				|      {
+				|        "protocol": ["dns"],
 				|        "action": "hijack-dns"
 				|      },
 				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
+				|        "inbound": ["tun-in"],
+				|        "network": ["udp"],
+				|        "action": "reject"
+				|      },
+				|      {
+				|        "inbound": ["tun-in"],
 				|        "outbound": "proxy"
 				|      }
 				|    ],
@@ -213,7 +217,7 @@ object ConfigTemplate {
 				|      "address": [
 				|        "198.18.0.1/30"
 				|      ],
-				|      "mtu": 1500,
+				|      "mtu": 1360,
 				|      "endpoint_independent_nat": true
 				|    }
 				|  ],

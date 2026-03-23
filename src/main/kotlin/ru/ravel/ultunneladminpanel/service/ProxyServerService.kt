@@ -294,6 +294,11 @@ class ProxyServerService(
 				}
 				val port = inbound?.listen_port?.toLong()
 				val id = inbound?.id
+				val sniOrIp = if (proxy.serverIp != null) {
+					proxy.serverIp
+				} else {
+					inbound?.addrs?.first()?.server!!
+				}
 				val sni = inbound?.addrs?.first()?.server!!
 				val password = UserService.generateSecretKey()
 
@@ -330,7 +335,7 @@ class ProxyServerService(
 					.build()
 				createUnsafeOkHttpClient().newCall(request).execute()
 				return ConfigDataNaive(
-					server = sni,
+					server = sniOrIp,
 					serverPort = port!!,
 					username = user.name!!,
 					password = password,
