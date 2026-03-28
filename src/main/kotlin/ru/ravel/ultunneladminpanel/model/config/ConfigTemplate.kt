@@ -21,6 +21,16 @@ object ConfigTemplate {
 	}
 
 	fun getConfig(configData: ConfigData, platform: String = ""): String {
+		val routeExcludeAddress = if (configData.proxy?.serverIp != null) {
+			"""
+				|      "route_exclude_address": [
+				|        "${configData.proxy?.serverIp}/32"
+				|      ],
+			"""
+		} else {
+			""
+		}
+
 		val serializedConfigData = serializeConfig(configData, ignoreUrl = true)
 		SerializationContext.setControllerCall(true)
 		SerializationContext.clear()
@@ -191,79 +201,73 @@ object ConfigTemplate {
 				|    "level": "debug"
 				|  },
 				|  "dns": {
-				|    "final": "remote-dns",
-				|    "servers": [
-				|      {
-				|        "type": "udp",
-				|        "tag": "bootstrap",
-				|        "server": "1.1.1.1"
-				|      },
-				|      {
-				|        "tag": "remote-dns",
-				|        "type": "https",
-				|        "server": "1.1.1.1",
-				|        "server_port": 443,
-				|        "path": "/dns-query",
-				|        "tls": {
-				|          "enabled": true,
-				|          "server_name": "cloudflare-dns.com"
-				|        },
-				|        "detour": "proxy"
-				|      }
-				|    ]
+				|	"strategy": "ipv4_only",
+				|	"final": "remote-dns",
+				|	"servers": [
+				|	  {
+				|		"type": "udp",
+				|		"tag": "bootstrap",
+				|		"server": "1.1.1.1"
+				|	  },
+				|	  {
+				|		"detour": "proxy",
+				|		"path": "/dns-query",
+				|		"server": "1.1.1.1",
+				|		"server_port": 443,
+				|		"tag": "remote-dns",
+				|		"tls": {
+				|		  "enabled": true,
+				|		  "server_name": "cloudflare-dns.com"
+				|		},
+				|		"type": "https"
+				|	  }
+				|	]
 				|  },
 				|  "inbounds": [
-				|    {
-				|      "type": "tun",
-				|      "tag": "tun-in",
-				|      "interface_name": "utun99",
-				|      "auto_route": true,
-				|      "strict_route": false,
-				|      "stack": "system",
-				|      "address": [
-				|        "198.18.0.1/30"
-				|      ],
-				|      "mtu": 1360,
-				|      "endpoint_independent_nat": true
-				|    }
+				|	{
+				|	  "type": "tun",
+				|	  "tag": "tun-in",
+				|	  "interface_name": "utun99",
+				|	  "address": [
+				|	    "198.18.0.1/30"
+				|	  ],
+				|	  "auto_route": true,
+				|	  "strict_route": true,
+				|	  ${routeExcludeAddress}
+				|	  "stack": "system",
+				|	  "mtu": 1360,
+				|	  "endpoint_independent_nat": true
+				|	}
 				|  ],
 				|  "outbounds": [
-				|    ${serializedConfigData},
-				|    {
-				|      "type": "direct",
-				|      "tag": "direct"
-				|    },
-				|    {
-				|      "type": "block",
-				|      "tag": "block"
-				|    }
+				|	${serializedConfigData},
+				|	{
+				|	  "type": "direct",
+				|	  "tag": "direct"
+				|	},
+				|	{
+				|	  "type": "block",
+				|	  "tag": "block"
+				|	}
 				|  ],
 				|  "route": {
-				|    "auto_detect_interface": true,
-				|    "default_domain_resolver": "bootstrap",
-				|    "rules": [
-				|      {
-				|        "protocol": [
-				|          "dns"
-				|        ],
-				|        "action": "hijack-dns"
-				|      },
-				|      {
-				|        "domain_suffix": [
-				|          "localhost",
-				|          "msftconnecttest.com",
-				|          "msftncsi.com"
-				|        ],
-				|        "outbound": "direct"
-				|      },
-				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
-				|        "outbound": "proxy"
-				|      }
-				|    ],
-				|    "final": "proxy"
+				|	"auto_detect_interface": false,
+				|	"default_domain_resolver": "bootstrap",
+				|	"rules": [
+				|	  {
+				|		"inbound": ["tun-in"],
+				|		"action": "sniff"
+				|	  },
+				|	  {
+				|		"protocol": ["dns"],
+				|		"action": "hijack-dns"
+				|	  },
+				|	  {
+				|		"inbound": ["tun-in"],
+				|		"outbound": "proxy"
+				|	  }
+				|	],
+				|	"final": "proxy"
 				|  }
 				|}
 				""".trimMargin()

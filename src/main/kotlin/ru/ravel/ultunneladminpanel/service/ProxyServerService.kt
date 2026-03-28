@@ -140,8 +140,10 @@ class ProxyServerService(
 						serviceName = stream.grpcSettings?.serviceName ?: "GunService",
 						idleTimeout = "15s",
 						pingTimeout = "15s",
-					)
-				)
+					),
+				).apply {
+					this.proxy = proxy
+				}
 			}
 
 			TROJAN -> {
@@ -196,8 +198,10 @@ class ProxyServerService(
 					password = uuidPassword,
 					sni = sniHost,
 					fp = "chrome",
-					alpn = listOf("h2")
-				)
+					alpn = listOf("h2"),
+				).apply {
+					this.proxy = proxy
+				}
 			}
 
 			HYSTERIA2 -> {
@@ -211,7 +215,9 @@ class ProxyServerService(
 					password = "${addNewUser.uuid}:${addNewUser.password}",
 					server = hysteriaHost,
 					serverPort = proxy.proxyPort!!,
-				)
+				).apply {
+					this.proxy = proxy
+				}
 			}
 
 			SSH -> {
@@ -221,7 +227,9 @@ class ProxyServerService(
 					serverPort = proxy.proxyPort!!,
 					password = password,
 					user = user.name!!,
-				)
+				).apply {
+					this.proxy = proxy
+				}
 			}
 
 			WIREGUARD, AMNEZIA_WG -> {
@@ -342,8 +350,10 @@ class ProxyServerService(
 					tls = TlsSettings(
 						enabled = true,
 						serverName = sni,
-					)
-				)
+					),
+				).apply {
+					this.proxy = proxy
+				}
 			}
 		}
 	}

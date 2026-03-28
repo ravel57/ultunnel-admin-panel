@@ -3,6 +3,7 @@ package ru.ravel.ultunneladminpanel.model.config
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonProperty
 import jakarta.persistence.*
+import ru.ravel.ultunneladminpanel.model.Proxy
 import kotlin.jvm.Transient
 
 @Entity
@@ -31,7 +32,7 @@ data class ConfigDataSsh(
 ) : ConfigData(id = id, server = server, type = type) {
 
 	override fun fillFields(): ConfigDataSsh {
-		this.server = super.server
+		this.server = proxy?.serverIp // super.server
 		this.type = super.type
 		tag = "proxy"
 		this.url = "${type}://${user}:${password}@${server}:${serverPort}"

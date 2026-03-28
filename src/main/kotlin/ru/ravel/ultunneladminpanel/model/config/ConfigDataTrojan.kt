@@ -3,9 +3,13 @@ package ru.ravel.ultunneladminpanel.model.config
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonProperty
 import jakarta.persistence.Entity
+import jakarta.persistence.FetchType
 import jakarta.persistence.GeneratedValue
 import jakarta.persistence.GenerationType
 import jakarta.persistence.Id
+import jakarta.persistence.JoinColumn
+import jakarta.persistence.ManyToOne
+import ru.ravel.ultunneladminpanel.model.Proxy
 
 
 @Entity
@@ -42,7 +46,7 @@ data class ConfigDataTrojan(
 	id = id,
 	type = type,
 	server = trojanServer ?: "",
-	serverName = trojanServer
+	serverName = trojanServer,
 )
 {
 
@@ -63,6 +67,7 @@ data class ConfigDataTrojan(
 		if (this.server.isNullOrBlank()) {
 			throw IllegalStateException("Trojan server is null — ошибка генерации")
 		}
+		this.server = proxy?.serverIp // super.server
 		this.type = "trojan"
 		this.tag = "proxy"
 		this.url = buildString {
