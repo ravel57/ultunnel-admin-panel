@@ -36,6 +36,11 @@ object ConfigTemplate {
 				|    "final": "remote-dns",
 				|    "servers": [
 				|      {
+				|        "type": "udp",
+				|        "tag": "bootstrap",
+				|        "server": "1.1.1.1"
+				|      },
+				|      {
 				|        "tag": "remote-dns",
 				|        "type": "https",
 				|        "server": "1.1.1.1",
@@ -61,7 +66,9 @@ object ConfigTemplate {
 				|        "198.18.0.1/30"
 				|      ],
 				|      "mtu": 1360,
-				|      "endpoint_independent_nat": true
+				|      "endpoint_independent_nat": true,
+				|      "sniff": true,
+				|      "sniff_override_destination": true
 				|    }
 				|  ],
 				|  "outbounds": [
@@ -78,7 +85,7 @@ object ConfigTemplate {
 				|  "route": {
 				|    "auto_detect_interface": true,
 				|    "override_android_vpn": true,
-				|    "default_domain_resolver": "remote-dns",
+				|    "default_domain_resolver": "bootstrap",
 				|    "rules": [
 				|      {
 				|        "inbound": ["tun-in"],
@@ -87,11 +94,6 @@ object ConfigTemplate {
 				|      {
 				|        "protocol": ["dns"],
 				|        "action": "hijack-dns"
-				|      },
-				|      {
-				|        "inbound": ["tun-in"],
-				|        "network": ["udp"],
-				|        "action": "reject"
 				|      },
 				|      {
 				|        "inbound": ["tun-in"],
@@ -114,6 +116,11 @@ object ConfigTemplate {
 				|    "strategy": "ipv4_only",
 				|    "final": "remote-dns",
 				|    "servers": [
+				|      {
+				|        "type": "udp",
+				|        "tag": "bootstrap",
+				|        "server": "1.1.1.1"
+				|      },
 				|      {
 				|        "tag": "remote-dns",
 				|        "type": "https",
@@ -156,9 +163,7 @@ object ConfigTemplate {
 				|  ],
 				|  "route": {
 				|    "auto_detect_interface": true,
-				|    "default_domain_resolver": {
-				|      "server": "remote-dns"
-				|    },
+				|    "default_domain_resolver": "bootstrap",
 				|    "rules": [
 				|      {
 				|        "inbound": ["tun-in"],
@@ -167,11 +172,6 @@ object ConfigTemplate {
 				|      {
 				|        "protocol": ["dns"],
 				|        "action": "hijack-dns"
-				|      },
-				|      {
-				|        "inbound": ["tun-in"],
-				|        "network": ["udp"],
-				|        "action": "reject"
 				|      },
 				|      {
 				|        "inbound": ["tun-in"],
@@ -191,20 +191,26 @@ object ConfigTemplate {
 				|    "level": "debug"
 				|  },
 				|  "dns": {
+				|    "final": "remote-dns",
 				|    "servers": [
 				|      {
 				|        "type": "udp",
-				|        "tag": "cloudflare",
+				|        "tag": "bootstrap",
 				|        "server": "1.1.1.1"
 				|      },
 				|      {
-				|        "type": "udp",
-				|        "tag": "google",
-				|        "server": "8.8.8.8"
+				|        "tag": "remote-dns",
+				|        "type": "https",
+				|        "server": "1.1.1.1",
+				|        "server_port": 443,
+				|        "path": "/dns-query",
+				|        "tls": {
+				|          "enabled": true,
+				|          "server_name": "cloudflare-dns.com"
+				|        },
+				|        "detour": "proxy"
 				|      }
-				|    ],
-				|    "final": "cloudflare",
-				|    "strategy": "ipv4_only"
+				|    ]
 				|  },
 				|  "inbounds": [
 				|    {
@@ -234,7 +240,7 @@ object ConfigTemplate {
 				|  ],
 				|  "route": {
 				|    "auto_detect_interface": true,
-				|    "default_domain_resolver": "cloudflare",
+				|    "default_domain_resolver": "bootstrap",
 				|    "rules": [
 				|      {
 				|        "protocol": [
