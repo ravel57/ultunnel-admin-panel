@@ -351,7 +351,6 @@ class ProxyServerService(
 						enabled = true,
 						serverName = sni,
 					),
-					domainResolver = "cloudflare"
 				).apply {
 					this.proxy = proxy
 				}
