@@ -33,6 +33,13 @@ data class ConfigDataNaive(
 	@JdbcTypeCode(SqlTypes.JSON)
 	var tls: TlsSettings? = null,
 
+	@JsonProperty("domain_resolver")
+	var domainResolver: String? = "cloudflare",
+
+	@JdbcTypeCode(SqlTypes.JSON)
+	@JsonProperty("udp_over_tcp")
+	var udpOverTcp: UdpOverTcp = UdpOverTcp(enabled = true, version = 2)
+
 ) : ConfigData(id = id, type = type, server = server) {
 
 	override fun fillFields(): ConfigDataNaive {

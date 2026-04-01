@@ -10,22 +10,29 @@ object ConfigTemplate {
 
 	private val mapper: ObjectMapper = ObjectMapper().registerModule(KotlinModule())
 
-	fun serializeConfig(configData: ConfigData, ignoreUrl: Boolean): String {
-		val filter = if (ignoreUrl) {
-			SimpleBeanPropertyFilter.serializeAllExcept("url")
-		} else {
+	fun serializeConfig(configData: ConfigData, ignoreUrl: Boolean, platform: String): String {
+		val excludes = mutableSetOf<String>()
+		if (ignoreUrl) {
+			excludes += "url"
+		}
+		if (platform == "android" || platform.isBlank()) {
+			excludes += "domain_resolver"
+		}
+		val filter = if (excludes.isEmpty()) {
 			SimpleBeanPropertyFilter.serializeAll()
+		} else {
+			SimpleBeanPropertyFilter.serializeAllExcept(excludes)
 		}
 		val filters = SimpleFilterProvider().addFilter("configFilter", filter)
 		return mapper.writer(filters).writeValueAsString(configData)
 	}
 
 	fun getConfig(configData: ConfigData, platform: String = ""): String {
-		val serializedConfigData = serializeConfig(configData, ignoreUrl = true)
+		val serializedConfigData = serializeConfig(configData, ignoreUrl = true, platform)
 		SerializationContext.setControllerCall(true)
 		SerializationContext.clear()
 		val config = when (platform) {
-			"android", "" -> {
+			"android" -> {
 				"""
 				|{
 				|  "log": {
@@ -157,16 +164,21 @@ object ConfigTemplate {
 				|    }
 				|  ],
 				|  "route": {
+				|    "default_domain_resolver": "cloudflare",
 				|    "rules": [
 				|      {
 				|        "inbound": [
 				|          "tun-in"
 				|        ],
 				|        "protocol": [
-				|			"dns"
+				|		   "dns"
 				|       ],
-				|        "action": "hijack-dns"
+				|       "action": "hijack-dns"
 				|      },
+				|      {
+				|  	     "ip_cidr": ["1.1.1.1/32", "8.8.8.8/32"],
+				|  	     "outbound": "direct"
+				|  	   },
 				|      {
 				|        "inbound": [
 				|          "tun-in"

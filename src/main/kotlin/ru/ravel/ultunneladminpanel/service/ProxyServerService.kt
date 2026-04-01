@@ -337,7 +337,8 @@ class ProxyServerService(
 					tls = TlsSettings(
 						enabled = true,
 						serverName = sni,
-					)
+					),
+					domainResolver = "cloudflare"
 				)
 			}
 		}
