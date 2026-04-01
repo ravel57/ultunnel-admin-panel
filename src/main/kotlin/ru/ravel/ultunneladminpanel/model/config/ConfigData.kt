@@ -3,6 +3,7 @@ package ru.ravel.ultunneladminpanel.model.config
 import com.fasterxml.jackson.annotation.JsonFilter
 import com.fasterxml.jackson.annotation.JsonIgnore
 import jakarta.persistence.*
+import ru.ravel.ultunneladminpanel.model.Proxy
 
 
 @Entity
@@ -27,6 +28,11 @@ abstract class ConfigData(
 	var serverName: String? = null,
 
 	var url: String? = null,
+
+	@ManyToOne(fetch = FetchType.EAGER)
+	@JoinColumn(name = "proxy_id")
+	@JsonIgnore
+	var proxy: Proxy? = null,
 
 ) {
 	abstract fun fillFields(): ConfigData

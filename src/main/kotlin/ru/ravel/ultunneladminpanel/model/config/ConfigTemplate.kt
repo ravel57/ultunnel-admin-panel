@@ -28,6 +28,16 @@ object ConfigTemplate {
 	}
 
 	fun getConfig(configData: ConfigData, platform: String = ""): String {
+		val routeExcludeAddress = if (configData.proxy?.serverIp != null) {
+			"""
+				|      "route_exclude_address": [
+				|        "${configData.proxy?.serverIp}/32"
+				|      ],
+			"""
+		} else {
+			""
+		}
+
 		val serializedConfigData = serializeConfig(configData, ignoreUrl = true, platform)
 		SerializationContext.setControllerCall(true)
 		SerializationContext.clear()
@@ -39,6 +49,8 @@ object ConfigTemplate {
 				|    "level": "debug"
 				|  },
 				|  "dns": {
+				|    "strategy": "ipv4_only",
+				|    "final": "remote-dns",
 				|    "servers": [
 				|      {
 				|        "type": "udp",
@@ -46,24 +58,18 @@ object ConfigTemplate {
 				|        "server": "1.1.1.1"
 				|      },
 				|      {
+				|        "tag": "remote-dns",
 				|        "type": "https",
-				|        "tag": "cloudflare",
-				|        "server": "cloudflare-dns.com",
+				|        "server": "1.1.1.1",
+				|        "server_port": 443,
 				|        "path": "/dns-query",
-				|        "detour": "proxy",
-				|        "domain_resolver": "bootstrap"
-				|      },
-				|      {
-				|        "type": "https",
-				|        "tag": "google",
-				|        "server": "dns.google",
-				|        "path": "/dns-query",
-				|        "detour": "proxy",
-				|        "domain_resolver": "bootstrap"
+				|        "tls": {
+				|          "enabled": true,
+				|          "server_name": "cloudflare-dns.com"
+				|        },
+				|        "detour": "proxy"
 				|      }
-				|    ],
-				|    "final": "cloudflare",
-				|    "strategy": "ipv4_only"
+				|    ]
 				|  },
 				|  "inbounds": [
 				|    {
@@ -76,7 +82,7 @@ object ConfigTemplate {
 				|      "address": [
 				|        "198.18.0.1/30"
 				|      ],
-				|      "mtu": 1500,
+				|      "mtu": 1360,
 				|      "endpoint_independent_nat": true,
 				|      "sniff": true,
 				|      "sniff_override_destination": true
@@ -99,18 +105,15 @@ object ConfigTemplate {
 				|    "default_domain_resolver": "bootstrap",
 				|    "rules": [
 				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
-				|        "protocol": [
-				|          "dns"
-				|        ],
+				|        "inbound": ["tun-in"],
+				|        "action": "sniff"
+				|      },
+				|      {
+				|        "protocol": ["dns"],
 				|        "action": "hijack-dns"
 				|      },
 				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
+				|        "inbound": ["tun-in"],
 				|        "outbound": "proxy"
 				|      }
 				|    ],
@@ -127,105 +130,40 @@ object ConfigTemplate {
 				|    "level": "debug"
 				|  },
 				|  "dns": {
+				|    "strategy": "ipv4_only",
+				|    "final": "remote-dns",
 				|    "servers": [
 				|      {
 				|        "type": "udp",
-				|        "tag": "cloudflare",
+				|        "tag": "bootstrap",
 				|        "server": "1.1.1.1"
 				|      },
 				|      {
-				|        "type": "udp",
-				|        "tag": "google",
-				|        "server": "8.8.8.8"
+				|        "tag": "remote-dns",
+				|        "type": "https",
+				|        "server": "1.1.1.1",
+				|        "server_port": 443,
+				|        "path": "/dns-query",
+				|        "tls": {
+				|          "enabled": true,
+				|          "server_name": "cloudflare-dns.com"
+				|        },
+				|        "detour": "proxy"
 				|      }
-				|    ],
-				|    "final": "cloudflare",
-				|    "strategy": "ipv4_only"
+				|    ]
 				|  },
 				|  "inbounds": [
 				|    {
 				|      "type": "tun",
 				|      "tag": "tun-in",
+				|      "interface_name": "tun0",
 				|      "auto_route": true,
-				|      "strict_route": false,
-				|      "inet4_address": "198.18.0.1/30",
-				|      "mtu": 1500
-				|    }
-				|  ],
-				|  "outbounds": [
-				|    ${serializedConfigData},
-				|    {
-				|      "type": "direct",
-				|      "tag": "direct"
-				|    },
-				|    {
-				|      "type": "block",
-				|      "tag": "block"
-				|    }
-				|  ],
-				|  "route": {
-				|    "default_domain_resolver": "cloudflare",
-				|    "rules": [
-				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
-				|        "protocol": [
-				|		   "dns"
-				|       ],
-				|       "action": "hijack-dns"
-				|      },
-				|      {
-				|  	     "ip_cidr": ["1.1.1.1/32", "8.8.8.8/32"],
-				|  	     "outbound": "direct"
-				|  	   },
-				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
-				|        "outbound": "proxy"
-				|      }
-				|    ],
-				|    "final": "proxy"
-				|  }
-				|}
-				""".trimMargin()
-			}
-
-			"desktop" -> {
-				"""
-				|{
-				|  "log": {
-				|    "level": "debug"
-				|  },
-				|  "dns": {
-				|    "servers": [
-				|      {
-				|        "type": "udp",
-				|        "tag": "cloudflare",
-				|        "server": "1.1.1.1"
-				|      },
-				|      {
-				|        "type": "udp",
-				|        "tag": "google",
-				|        "server": "8.8.8.8"
-				|      }
-				|    ],
-				|    "final": "cloudflare",
-				|    "strategy": "ipv4_only"
-				|  },
-				|  "inbounds": [
-				|    {
-				|      "type": "tun",
-				|      "tag": "tun-in",
-				|      "interface_name": "utun99",
-				|      "auto_route": true,
-				|      "strict_route": false,
-				|      "stack": "system",
+				|      "strict_route": true,
+				|      "stack": "gvisor",
 				|      "address": [
 				|        "198.18.0.1/30"
 				|      ],
-				|      "mtu": 1500,
+				|      "mtu": 1360,
 				|      "endpoint_independent_nat": true
 				|    }
 				|  ],
@@ -242,30 +180,101 @@ object ConfigTemplate {
 				|  ],
 				|  "route": {
 				|    "auto_detect_interface": true,
-				|    "default_domain_resolver": "cloudflare",
+				|    "default_domain_resolver": "bootstrap",
 				|    "rules": [
 				|      {
-				|        "protocol": [
-				|          "dns"
-				|        ],
+				|        "inbound": ["tun-in"],
+				|        "action": "sniff"
+				|      },
+				|      {
+				|        "protocol": ["dns"],
 				|        "action": "hijack-dns"
 				|      },
 				|      {
-				|        "domain_suffix": [
-				|          "localhost",
-				|          "msftconnecttest.com",
-				|          "msftncsi.com"
-				|        ],
-				|        "outbound": "direct"
-				|      },
-				|      {
-				|        "inbound": [
-				|          "tun-in"
-				|        ],
+				|        "inbound": ["tun-in"],
 				|        "outbound": "proxy"
 				|      }
 				|    ],
 				|    "final": "proxy"
+				|  }
+				|}
+				""".trimMargin()
+			}
+
+			"desktop" -> {
+				"""
+				|{
+				|  "log": {
+				|    "level": "debug"
+				|  },
+				|  "dns": {
+				|	"strategy": "ipv4_only",
+				|	"final": "remote-dns",
+				|	"servers": [
+				|	  {
+				|		"type": "udp",
+				|		"tag": "bootstrap",
+				|		"server": "1.1.1.1"
+				|	  },
+				|	  {
+				|		"detour": "proxy",
+				|		"path": "/dns-query",
+				|		"server": "1.1.1.1",
+				|		"server_port": 443,
+				|		"tag": "remote-dns",
+				|		"tls": {
+				|		  "enabled": true,
+				|		  "server_name": "cloudflare-dns.com"
+				|		},
+				|		"type": "https"
+				|	  }
+				|	]
+				|  },
+				|  "inbounds": [
+				|	{
+				|	  "type": "tun",
+				|	  "tag": "tun-in",
+				|	  "interface_name": "utun99",
+				|	  "address": [
+				|	    "198.18.0.1/30"
+				|	  ],
+				|	  "auto_route": true,
+				|	  "strict_route": true,
+				|	  ${routeExcludeAddress}
+				|	  "stack": "system",
+				|	  "mtu": 1360,
+				|	  "endpoint_independent_nat": true
+				|	}
+				|  ],
+				|  "outbounds": [
+				|	${serializedConfigData},
+				|	{
+				|	  "type": "direct",
+				|	  "tag": "direct"
+				|	},
+				|	{
+				|	  "type": "block",
+				|	  "tag": "block"
+				|	}
+				|  ],
+				|  "route": {
+				|	"auto_detect_interface": false,
+				|	"default_domain_resolver": "bootstrap",
+				|	"rules": [
+				|	  {
+				|		"inbound": ["tun-in"],
+				|		"action": "sniff"
+				|	  },
+				|	  {
+				|		"protocol": ["dns"],
+				|		"action": "hijack-dns"
+				|	  },
+				|	  {
+				|		"inbound": ["tun-in"],
+				|		"outbound": "proxy"
+				|	  }
+				|	],
+				|	"final": "proxy"
 				|  }
 				|}
 				""".trimMargin()

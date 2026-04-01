@@ -140,8 +140,10 @@ class ProxyServerService(
 						serviceName = stream.grpcSettings?.serviceName ?: "GunService",
 						idleTimeout = "15s",
 						pingTimeout = "15s",
-					)
-				)
+					),
+				).apply {
+					this.proxy = proxy
+				}
 			}
 
 			TROJAN -> {
@@ -196,8 +198,10 @@ class ProxyServerService(
 					password = uuidPassword,
 					sni = sniHost,
 					fp = "chrome",
-					alpn = listOf("h2")
-				)
+					alpn = listOf("h2"),
+				).apply {
+					this.proxy = proxy
+				}
 			}
 
 			HYSTERIA2 -> {
@@ -211,7 +215,9 @@ class ProxyServerService(
 					password = "${addNewUser.uuid}:${addNewUser.password}",
 					server = hysteriaHost,
 					serverPort = proxy.proxyPort!!,
-				)
+				).apply {
+					this.proxy = proxy
+				}
 			}
 
 			SSH -> {
@@ -221,7 +227,9 @@ class ProxyServerService(
 					serverPort = proxy.proxyPort!!,
 					password = password,
 					user = user.name!!,
-				)
+				).apply {
+					this.proxy = proxy
+				}
 			}
 
 			WIREGUARD, AMNEZIA_WG -> {
@@ -294,6 +302,11 @@ class ProxyServerService(
 				}
 				val port = inbound?.listen_port?.toLong()
 				val id = inbound?.id
+				val sniOrIp = if (proxy.serverIp != null) {
+					proxy.serverIp
+				} else {
+					inbound?.addrs?.first()?.server!!
+				}
 				val sni = inbound?.addrs?.first()?.server!!
 				val password = UserService.generateSecretKey()
 
@@ -330,7 +343,7 @@ class ProxyServerService(
 					.build()
 				createUnsafeOkHttpClient().newCall(request).execute()
 				return ConfigDataNaive(
-					server = sni,
+					server = sniOrIp,
 					serverPort = port!!,
 					username = user.name!!,
 					password = password,
@@ -339,7 +352,9 @@ class ProxyServerService(
 						serverName = sni,
 					),
 					domainResolver = "cloudflare"
-				)
+				).apply {
+					this.proxy = proxy
+				}
 			}
 		}
 	}

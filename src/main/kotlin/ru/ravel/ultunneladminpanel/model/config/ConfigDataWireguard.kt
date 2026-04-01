@@ -3,6 +3,7 @@ package ru.ravel.ultunneladminpanel.model.config
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonProperty
 import jakarta.persistence.*
+import ru.ravel.ultunneladminpanel.model.Proxy
 
 @Entity
 class ConfigDataWireguard(
@@ -62,7 +63,7 @@ class ConfigDataWireguard(
 ) : ConfigData(id = id, type = type, server = server) {
 
 	override fun fillFields(): ConfigDataWireguard {
-		this.server = super.server
+		this.server = proxy?.serverIp // super.server
 		this.type = super.type
 		this.tag = type?.lowercase()
 		this.url = ""
