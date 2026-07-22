@@ -27,18 +27,27 @@ class SshService {
 	fun addNewUser(proxy: Proxy, host: String, user: User): String {
 		try {
 			val session = login(proxy, host)
-			val channel = session.openChannel("exec")
+			val channel = session.openChannel("exec") as ChannelExec
 			val password = UserService.generateSecretKey()
-			val command = buildString {
-				append("export PATH=\"\$PATH:/sbin:/usr/sbin:/usr/local/sbin\" \\")
-				append("useradd ${user.name} --no-create-home --no-user-group --shell /usr/sbin/nologin --password \"\$(openssl passwd -6 ${password})\"")
-			}
-			(channel as ChannelExec).setCommand(command)
-			val inputStream = channel.inputStream
+			val command = """
+				export PATH="${'$'}PATH:/sbin:/usr/sbin:/usr/local/sbin";
+				useradd '${user.name}' --no-create-home --no-user-group --shell /usr/sbin/nologin --password "${'$'}(openssl passwd -6 '$password')"
+			""".trimIndent()
+			channel.setCommand(command)
+			val stdout = channel.inputStream
+			val stderr = channel.errStream
 			channel.connect()
-			inputStream.bufferedReader().use { it.readText() }
+			val output = stdout.bufferedReader().readText()
+			val error = stderr.bufferedReader().readText()
+			while (!channel.isClosed) {
+				Thread.sleep(100)
+			}
+			val exitCode = channel.exitStatus
 			channel.disconnect()
 			session.disconnect()
+			if (exitCode != 0) {
+				throw RuntimeException("useradd failed with exit code $exitCode\nSTDOUT:\n$output\nSTDERR:\n$error\nCOMMAND:\n$command")
+			}
 			return password
 		} catch (e: Exception) {
 			throw RuntimeException("Error while trying to add user", e)
