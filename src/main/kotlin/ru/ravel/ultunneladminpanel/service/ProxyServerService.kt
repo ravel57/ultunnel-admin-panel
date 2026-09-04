@@ -1,9 +1,13 @@
 package ru.ravel.ultunneladminpanel.service
 
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
 import jakarta.transaction.Transactional
+import okhttp3.Cookie
+import okhttp3.CookieJar
 import okhttp3.FormBody
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -19,9 +23,6 @@ import ru.ravel.ultunneladminpanel.model.User
 import ru.ravel.ultunneladminpanel.model.config.*
 import ru.ravel.ultunneladminpanel.model.sui.SuiInbound
 import ru.ravel.ultunneladminpanel.model.sui.SuiInboundsResponse
-import ru.ravel.ultunneladminpanel.model.xui.Root
-import ru.ravel.ultunneladminpanel.model.xui.StreamSettings
-import ru.ravel.ultunneladminpanel.model.xui.ThreeXuiType
 import ru.ravel.ultunneladminpanel.repository.ProxyRepository
 import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
 import ru.ravel.ultunneladminpanel.repository.UserRepository
@@ -68,76 +69,288 @@ class ProxyServerService(
 	}
 
 
+	private data class ThreeXuiSession(
+		val baseUrl: String,
+		val cookie: String,
+		val csrfToken: String,
+	)
+
+	private fun threeXuiBaseUrl(host: String, proxy: Proxy): String {
+		return if (proxy.useSubDomain == true) {
+			"https://${proxy.subdomain}.${host}"
+		} else {
+			"https://${host}:${proxy.port}"
+		}
+	}
+
+	private fun cookieHeader(setCookieHeaders: List<String>): String {
+		return setCookieHeaders
+			.map { it.substringBefore(';').trim() }
+			.filter { it.isNotEmpty() }
+			.joinToString("; ")
+	}
+
+	private fun mergeCookies(oldCookie: String, setCookieHeaders: List<String>): String {
+		val cookies = linkedMapOf<String, String>()
+
+		fun putCookie(raw: String) {
+			val pair = raw.substringBefore(';').trim()
+			val separator = pair.indexOf('=')
+			if (separator > 0) {
+				cookies[pair.substring(0, separator)] = pair.substring(separator + 1)
+			}
+		}
+
+		oldCookie.split(';').map { it.trim() }.filter { it.isNotEmpty() }.forEach(::putCookie)
+		setCookieHeaders.forEach(::putCookie)
+
+		return cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+	}
+
+	private fun readJsonResponse(
+		request: Request,
+		objectMapper: ObjectMapper,
+		operation: String,
+	): JsonNode {
+		return createUnsafeOkHttpClient().newCall(request).execute().use { response ->
+			val responseBody = response.body?.string().orEmpty()
+			if (!response.isSuccessful) {
+				error("3x-ui $operation failed: HTTP ${response.code}: $responseBody")
+			}
+
+			val root = objectMapper.readTree(responseBody)
+				?: error("3x-ui $operation returned empty JSON")
+
+			if (root.has("success") && !root.path("success").asBoolean()) {
+				error("3x-ui $operation failed: ${root.path("msg").asText("unknown error")}")
+			}
+
+			root
+		}
+	}
+
+	private class ThreeXuiCookieJar : CookieJar {
+		private val cookies = mutableListOf<Cookie>()
+
+		@Synchronized
+		override fun saveFromResponse(url: HttpUrl, newCookies: List<Cookie>) {
+			newCookies.forEach { newCookie ->
+				cookies.removeAll {
+					it.name == newCookie.name &&
+						it.domain == newCookie.domain &&
+						it.path == newCookie.path
+				}
+				cookies += newCookie
+			}
+		}
+
+		@Synchronized
+		override fun loadForRequest(url: HttpUrl): List<Cookie> {
+			val now = System.currentTimeMillis()
+			cookies.removeAll { it.expiresAt < now }
+			return cookies.filter { it.matches(url) }
+		}
+
+		@Synchronized
+		fun cookieHeader(): String = cookies
+			.filter { it.expiresAt >= System.currentTimeMillis() }
+			.joinToString("; ") { "${it.name}=${it.value}" }
+	}
+
+	private fun loginThreeXui(host: String, proxy: Proxy, objectMapper: ObjectMapper): ThreeXuiSession {
+		val baseUrl = threeXuiBaseUrl(host, proxy)
+		val cookieJar = ThreeXuiCookieJar()
+		val client = createUnsafeOkHttpClient()
+			.newBuilder()
+			.cookieJar(cookieJar)
+			.build()
+
+		// Keep one OkHttpClient for the whole browser-session flow. This is important:
+		// Set-Cookie can be returned by an intermediate redirect, not only the final response.
+		val csrfRequest = Request.Builder()
+			.url("$baseUrl/csrf-token")
+			.get()
+			.build()
+
+		val csrfToken = client.newCall(csrfRequest).execute().use { response ->
+			val responseBody = response.body?.string().orEmpty()
+			if (!response.isSuccessful) {
+				error("3x-ui csrf-token failed: HTTP ${response.code}: $responseBody")
+			}
+
+			val root = objectMapper.readTree(responseBody)
+				?: error("3x-ui csrf-token returned empty JSON")
+			if (!root.path("success").asBoolean()) {
+				error("3x-ui csrf-token failed: ${root.path("msg").asText("unknown error")}")
+			}
+
+			root.path("obj").asText().takeIf { it.isNotBlank() }
+				?: error("3x-ui csrf-token is empty")
+		}
+
+		val loginJson = objectMapper.createObjectNode().apply {
+			put("username", proxy.login)
+			put("password", proxy.password)
+		}
+		val loginBody = objectMapper.writeValueAsString(loginJson)
+			.toRequestBody("application/json".toMediaType())
+		val loginRequest = Request.Builder()
+			.url("$baseUrl/login")
+			.header("Content-Type", "application/json")
+			.header("X-CSRF-Token", csrfToken)
+			.post(loginBody)
+			.build()
+
+		client.newCall(loginRequest).execute().use { response ->
+			val responseBody = response.body?.string().orEmpty()
+			if (!response.isSuccessful) {
+				error("3x-ui login failed: HTTP ${response.code}: $responseBody")
+			}
+
+			val root = objectMapper.readTree(responseBody)
+				?: error("3x-ui login returned empty JSON")
+			if (!root.path("success").asBoolean()) {
+				error("3x-ui login failed: ${root.path("msg").asText("unknown error")}")
+			}
+		}
+
+		val authenticatedCookie = cookieJar.cookieHeader()
+		if (authenticatedCookie.isBlank()) {
+			error(
+				"3x-ui login succeeded but no session cookie was received. " +
+					"Check whether a reverse proxy is stripping Set-Cookie headers."
+			)
+		}
+
+		return ThreeXuiSession(
+			baseUrl = baseUrl,
+			cookie = authenticatedCookie,
+			csrfToken = csrfToken,
+		)
+	}
+
+	private fun getThreeXuiInbound(
+		session: ThreeXuiSession,
+		protocol: String,
+		objectMapper: ObjectMapper,
+	): ObjectNode {
+		val request = Request.Builder()
+			.url("${session.baseUrl}/panel/api/inbounds/list")
+			.header("Cookie", session.cookie)
+			.get()
+			.build()
+
+		val root = readJsonResponse(request, objectMapper, "list inbounds")
+		val inbounds = root.path("obj")
+		if (!inbounds.isArray) error("3x-ui list inbounds returned invalid obj")
+
+		return inbounds
+			.filter { it.path("protocol").asText().equals(protocol, ignoreCase = true) }
+			.lastOrNull() as? ObjectNode
+			?: error("3x-ui inbound for protocol '$protocol' not found")
+	}
+
+	private fun objectField(node: JsonNode?, objectMapper: ObjectMapper): ObjectNode? {
+		if (node == null || node.isNull) return null
+		if (node.isObject) return node as ObjectNode
+		if (node.isTextual && node.asText().isNotBlank()) {
+			return objectMapper.readTree(node.asText()) as? ObjectNode
+		}
+		return null
+	}
+
+	private fun addThreeXuiClient(
+		session: ThreeXuiSession,
+		inboundId: Long,
+		client: ObjectNode,
+		objectMapper: ObjectMapper,
+	) {
+		val payload = objectMapper.createObjectNode().apply {
+			set<JsonNode>("client", client)
+			putArray("inboundIds").add(inboundId)
+		}
+
+		val body = objectMapper.writeValueAsString(payload)
+			.toRequestBody("application/json".toMediaType())
+		val request = Request.Builder()
+			.url("${session.baseUrl}/panel/api/clients/add")
+			.header("Content-Type", "application/json")
+			.header("Cookie", session.cookie)
+			.header("X-CSRF-Token", session.csrfToken)
+			.post(body)
+			.build()
+
+		readJsonResponse(request, objectMapper, "add client")
+	}
+
+	private fun randomThreeXuiSubId(): String {
+		return UUID.randomUUID().toString().replace("-", "").take(16)
+	}
+
 	@Transactional
 	fun createUserProxy(host: String, proxy: Proxy, user: User): ConfigData {
 		val objectMapper = ObjectMapper()
 		when (proxy.type!!) {
 			VLESS -> {
-				var json = "{\"username\":\"${proxy.login}\",\"password\":\"${proxy.password}\"}"
-				var body = json.toRequestBody("application/json".toMediaType())
-				val url = if (proxy.useSubDomain!!) {
-					"https://${proxy.subdomain}.${host}"
-				} else {
-					"https://${host}:${proxy.port}"
-				}
-				var request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/login")
-					.post(body)
-					.build()
-				var response = createUnsafeOkHttpClient().newCall(request).execute()
-				val cooke = response.headers["Set-Cookie"]
-				request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/panel/api/inbounds/list")
-					.header("Cookie", cooke.toString())
-					.get()
-					.build()
-				response = createUnsafeOkHttpClient().newCall(request).execute()
-				val string = response.body?.string()
-				val readValue = objectMapper.readValue(string, Root::class.java)
-				val protocol = ThreeXuiType.VLESS.name.lowercase()
-				val inbound = readValue.obj?.last { it.protocol == protocol }
-				val port = inbound?.port
-				val id = inbound?.id
-				val stream = objectMapper.readValue(inbound?.streamSettings, StreamSettings::class.java)
-//				val ech = stream.tlsSettings?.settings?.echConfigList ?: ""
-				val sni = stream.tlsSettings?.serverName
+				val protocol = "vless"
+				val session = loginThreeXui(host, proxy, objectMapper)
+				val inbound = getThreeXuiInbound(session, protocol, objectMapper)
+				val inboundId = inbound.path("id").asLong()
+				val port = inbound.path("port").asLong()
+				if (inboundId <= 0L) error("3x-ui VLESS inbound has invalid id")
+				if (port <= 0L) error("3x-ui VLESS inbound has invalid port")
+
+				val stream = objectField(inbound.get("streamSettings"), objectMapper)
+					?: objectMapper.createObjectNode()
+				val tlsSettings = objectField(stream.get("tlsSettings"), objectMapper)
+				val grpcSettings = objectField(stream.get("grpcSettings"), objectMapper)
+
+				val sni = tlsSettings?.path("serverName")?.asText()?.takeIf { it.isNotBlank() }
+				val alpn = tlsSettings?.path("alpn")
+					?.takeIf { it.isArray }
+					?.map { it.asText() }
+					?.filter { it.isNotBlank() }
+					?.takeIf { it.isNotEmpty() }
+					?: listOf("h2")
+
 				val uuid = UUID.randomUUID().toString()
-				json = """{
-					"id": ${id},
-					"settings": "{\"clients\":[{\"id\":\"${uuid}\",\"alterId\":0,\"email\":\"${user.name}-vless\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":\"\",\"subId\":\"\"}]}"
-				}"""
-				body = json.toRequestBody("application/json".toMediaType())
-				request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/panel/api/inbounds/addClient")
-					.header("Cookie", cooke.toString())
-					.post(body)
-					.build()
-				createUnsafeOkHttpClient().newCall(request).execute()
-				val server = if (proxy.useSubDomain!!) {
+				val client = objectMapper.createObjectNode().apply {
+					put("email", "${user.name}-vless")
+					put("id", uuid)
+					put("subId", randomThreeXuiSubId())
+					put("limitIp", 0)
+					put("totalGB", 0)
+					put("expiryTime", 0)
+					put("tgId", 0)
+					put("comment", "")
+					put("enable", true)
+				}
+				addThreeXuiClient(session, inboundId, client, objectMapper)
+
+				val server = if (proxy.useSubDomain == true) {
 					"${proxy.subdomain}.${host}"
 				} else {
 					host
 				}
+
 				return ConfigDataVless(
 					type = protocol,
 					uuid = uuid,
 					server = server,
-					serverPort = port!!,
+					serverPort = port,
 					tls = TlsSettings(
 						enabled = true,
 						serverName = sni ?: host,
-						alpn = stream.tlsSettings?.alpn ?: listOf("h2"),
+						alpn = alpn,
 						utls = UtlsSettings(
 							enabled = true,
 							fingerprint = "chrome"
 						),
 					),
 					transport = TransportSettings(
-						type = "grpc",
-						serviceName = stream.grpcSettings?.serviceName ?: "GunService",
+						type = stream.path("network").asText("grpc"),
+						serviceName = grpcSettings?.path("serviceName")?.asText()
+							?.takeIf { it.isNotBlank() } ?: "GunService",
 						idleTimeout = "15s",
 						pingTimeout = "15s",
 					),
@@ -147,58 +360,52 @@ class ProxyServerService(
 			}
 
 			TROJAN -> {
-				var loginJson = "{\"username\":\"${proxy.login}\",\"password\":\"${proxy.password}\"}"
-				var body = loginJson.toRequestBody("application/json".toMediaType())
-				val url = if (proxy.useSubDomain!!) {
-					"https://${proxy.subdomain}.${host}"
-				} else {
-					"https://${host}:${proxy.port}"
+				val protocol = "trojan"
+				val session = loginThreeXui(host, proxy, objectMapper)
+				val inbound = getThreeXuiInbound(session, protocol, objectMapper)
+				val inboundId = inbound.path("id").asLong()
+				val port = inbound.path("port").asLong()
+				if (inboundId <= 0L) error("3x-ui Trojan inbound has invalid id")
+				if (port <= 0L) error("3x-ui Trojan inbound has invalid port")
+
+				val stream = objectField(inbound.get("streamSettings"), objectMapper)
+					?: objectMapper.createObjectNode()
+				val tlsSettings = objectField(stream.get("tlsSettings"), objectMapper)
+				val alpn = tlsSettings?.path("alpn")
+					?.takeIf { it.isArray }
+					?.map { it.asText() }
+					?.filter { it.isNotBlank() }
+					?.takeIf { it.isNotEmpty() }
+					?: listOf("h2")
+
+				val password = UUID.randomUUID().toString()
+				val client = objectMapper.createObjectNode().apply {
+					put("email", "${user.name}-trojan")
+					put("password", password)
+					put("subId", randomThreeXuiSubId())
+					put("limitIp", 0)
+					put("totalGB", 0)
+					put("expiryTime", 0)
+					put("tgId", 0)
+					put("comment", "")
+					put("enable", true)
 				}
-				var request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/login")
-					.post(body)
-					.build()
-				var response = createUnsafeOkHttpClient().newCall(request).execute()
-				val cookie = response.headers["Set-Cookie"]
-				request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/panel/api/inbounds/list")
-					.header("Cookie", cookie.toString())
-					.get()
-					.build()
-				response = createUnsafeOkHttpClient().newCall(request).execute()
-				val inboundList = objectMapper.readValue(response.body?.string(), Root::class.java)
-				val protocol = ThreeXuiType.TROJAN.name.lowercase()
-				val port = inboundList.obj?.last { it.protocol == protocol }?.port!!
-				val id = inboundList.obj.last { it.protocol == protocol }.id!!
+				addThreeXuiClient(session, inboundId, client, objectMapper)
 
-				val uuidPassword = UUID.randomUUID().toString()
-				val clientJson = """{
-				  "id": $id,"settings": "{\"clients\":[{\"password\":\"$uuidPassword\",\"email\":\"${user.name}-trojan\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"tgId\":\"\",\"subId\":\"${proxy.subdomain ?: ""}\",\"comment\":\"\",\"reset\":0}]}"
-				}""".trimIndent()
+				val sniHost = tlsSettings?.path("serverName")?.asText()?.takeIf { it.isNotBlank() }
+					?: if (proxy.useSubDomain == true) {
+						"${proxy.subdomain}.${host}"
+					} else {
+						host
+					}
 
-				body = clientJson.toRequestBody("application/json".toMediaType())
-
-				request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/panel/api/inbounds/addClient")
-					.header("Cookie", cookie.toString())
-					.post(body)
-					.build()
-				createUnsafeOkHttpClient().newCall(request).execute()
-				val sniHost = if (proxy.useSubDomain == true) {
-					"${proxy.subdomain}.${host}"
-				} else {
-					host
-				}
 				return ConfigDataTrojan(
 					trojanServer = host,
 					serverPort = port,
-					password = uuidPassword,
+					password = password,
 					sni = sniHost,
 					fp = "chrome",
-					alpn = listOf("h2"),
+					alpn = alpn,
 				).apply {
 					this.proxy = proxy
 				}
