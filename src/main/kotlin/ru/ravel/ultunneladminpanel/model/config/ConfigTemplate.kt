@@ -10,11 +10,18 @@ object ConfigTemplate {
 
 	private val mapper: ObjectMapper = ObjectMapper().registerModule(KotlinModule())
 
-	fun serializeConfig(configData: ConfigData, ignoreUrl: Boolean): String {
-		val filter = if (ignoreUrl) {
-			SimpleBeanPropertyFilter.serializeAllExcept("url")
-		} else {
+	fun serializeConfig(configData: ConfigData, ignoreUrl: Boolean, platform: String): String {
+		val excludes = mutableSetOf<String>()
+		if (ignoreUrl) {
+			excludes += "url"
+		}
+		if (platform == "android" || platform.isBlank()) {
+			excludes += "domain_resolver"
+		}
+		val filter = if (excludes.isEmpty()) {
 			SimpleBeanPropertyFilter.serializeAll()
+		} else {
+			SimpleBeanPropertyFilter.serializeAllExcept(excludes)
 		}
 		val filters = SimpleFilterProvider().addFilter("configFilter", filter)
 		return mapper.writer(filters).writeValueAsString(configData)
@@ -31,11 +38,11 @@ object ConfigTemplate {
 			""
 		}
 
-		val serializedConfigData = serializeConfig(configData, ignoreUrl = true)
+		val serializedConfigData = serializeConfig(configData, ignoreUrl = true, platform)
 		SerializationContext.setControllerCall(true)
 		SerializationContext.clear()
 		val config = when (platform) {
-			"android", "" -> {
+			"android" -> {
 				"""
 				|{
 				|  "log": {
