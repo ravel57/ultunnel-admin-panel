@@ -3,6 +3,7 @@ package ru.ravel.ultunneladminpanel.service
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
+import jakarta.persistence.EntityManager
 import jakarta.transaction.Transactional
 import okhttp3.Cookie
 import okhttp3.CookieJar
@@ -24,9 +25,11 @@ import ru.ravel.ultunneladminpanel.model.User
 import ru.ravel.ultunneladminpanel.model.config.*
 import ru.ravel.ultunneladminpanel.model.sui.SuiInbound
 import ru.ravel.ultunneladminpanel.model.sui.SuiInboundsResponse
+import ru.ravel.ultunneladminpanel.model.xui.ThreeXuiType
 import ru.ravel.ultunneladminpanel.repository.ProxyRepository
 import ru.ravel.ultunneladminpanel.repository.ProxyServerRepository
 import ru.ravel.ultunneladminpanel.repository.UserRepository
+import ru.ravel.ultunneladminpanel.repository.ConfigDataRepository
 import java.io.File
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets.UTF_8
@@ -39,6 +42,8 @@ class ProxyServerService(
 	private val proxyServerRepository: ProxyServerRepository,
 	private val proxyRepository: ProxyRepository,
 	private val userRepository: UserRepository,
+	private val configDataRepository: ConfigDataRepository,
+	private val entityManager: EntityManager,
 	private val hysteriaService: HysteriaService,
 ) {
 
@@ -182,6 +187,128 @@ class ProxyServerService(
 		proxyServer?.proxies?.add(proxy)
 		proxyServer?.let { proxyServerRepository.save(it) }
 		return proxy
+	}
+
+
+	@Transactional
+	fun deleteServer(serverId: Long) {
+		// Keep only scalar proxy IDs while config cleanup runs. The cleanup uses
+		// bulk/native mutations and loads ConfigData/User entities, so keeping the
+		// original ProxyServer graph managed would leave stale ConfigData -> Proxy
+		// references in the persistence context. When cascade removal later marks
+		// all server proxies as deleted, Hibernate then fails on transaction flush
+		// with TransientObjectException.
+		val proxyIds = proxyServerRepository.findById(serverId).orElseThrow()
+			.proxies
+			.orEmpty()
+			.mapNotNull { it.id }
+			.toSet()
+
+		deleteUserConfigsForProxyIds(proxyIds)
+
+		// Bulk deletes/updates bypass Hibernate managed state. Drop every stale
+		// ConfigData/User/Proxy instance, then load a fresh server graph and let
+		// orphan/cascade removal delete its proxies from a clean context.
+		entityManager.clear()
+
+		val serverToDelete = proxyServerRepository.findById(serverId).orElseThrow()
+		proxyServerRepository.delete(serverToDelete)
+		proxyServerRepository.flush()
+	}
+
+
+	@Transactional
+	fun deleteProxy(proxyId: Long) {
+		// Keep only scalar server IDs across the config cleanup. The cleanup uses
+		// bulk/native mutations, so keeping ProxyServer/Proxy entities managed in
+		// the same persistence context can leave Hibernate with stale references.
+		val serverIds = proxyServerRepository.findAll()
+			.filter { server -> server.proxies?.any { it.id == proxyId } == true }
+			.mapNotNull { it.id }
+
+		if (serverIds.isEmpty()) {
+			throw NoSuchElementException("Proxy $proxyId is not attached to any server")
+		}
+
+		val proxyType = proxyRepository.findById(proxyId).orElseThrow().type
+		if (proxyType == HYSTERIA2) {
+			deleteHysteriaUserConfigsForProxyId(proxyId)
+		} else {
+			deleteUserConfigsForProxyIds(setOf(proxyId))
+		}
+
+		// Bulk deletes/updates bypass Hibernate's managed entity state. In the
+		// Hysteria2 case ConfigData entities loaded during cleanup still referenced
+		// this Proxy in memory even after their DB rows/FKs were changed. Removing
+		// the proxy via orphanRemoval then failed with TransientObjectException.
+		// Clear those stale managed objects and reload only the servers we need.
+		entityManager.clear()
+
+		val servers = proxyServerRepository.findAllById(serverIds)
+		servers.forEach { server ->
+			server.proxies?.removeIf { it.id == proxyId }
+		}
+		proxyServerRepository.saveAllAndFlush(servers)
+	}
+
+
+	private fun deleteHysteriaUserConfigsForProxyId(proxyId: Long) {
+		// A protocol deletion must not delete configs of another protocol just
+		// because legacy data points them at the same Proxy row. In particular,
+		// deleting Hysteria2 used to make Hibernate attempt to delete a
+		// ConfigDataWireguard row and then fail on its ElementCollection FK.
+		val configsToDelete = configDataRepository.findAllByProxy_IdAndType(proxyId, "hysteria2")
+		val configIds = configsToDelete.mapNotNull { it.id }.toHashSet()
+
+		unlinkConfigsFromUsers(configIds)
+
+		// Restrict the JOINED-inheritance bulk delete to Hysteria2 rows only.
+		// This keeps WireGuard/Amnezia child tables completely out of the delete.
+		configDataRepository.deleteAllByProxyIdAndType(proxyId, "hysteria2")
+
+		// Old/broken rows of another config type may still reference this proxy.
+		// Preserve those configs, but detach the invalid FK so orphanRemoval can
+		// safely delete the Hysteria2 Proxy itself.
+		configDataRepository.detachAllFromProxy(proxyId)
+	}
+
+
+	private fun deleteUserConfigsForProxyIds(proxyIds: Set<Long>) {
+		if (proxyIds.isEmpty()) return
+
+		// Read config_data directly: legacy/orphaned configs may no longer be
+		// reachable through User.proxiesConfigs, while proxy_id still blocks the FK.
+		val configsToDelete = configDataRepository.findAllByProxy_IdIn(proxyIds)
+		if (configsToDelete.isEmpty()) return
+
+		val configIds = configsToDelete.mapNotNull { it.id }.toHashSet()
+
+		unlinkConfigsFromUsers(configIds)
+
+		// Use a bulk delete instead of EntityManager.remove() for every ConfigData.
+		// With JOINED inheritance, legacy/inconsistent subclass rows can otherwise
+		// trigger StaleObjectStateException when Hibernate expects one exact row
+		// to be deleted from (for example) config_data_vless.
+		configDataRepository.deleteAllByProxyIds(proxyIds)
+	}
+
+
+	private fun unlinkConfigsFromUsers(configIds: Set<Long>) {
+		if (configIds.isEmpty()) return
+
+		// Compare scalar IDs only: data classes for legacy config entities may
+		// still have nullable values that make equals/hashCode unsafe.
+		userRepository.findAll().forEach { user ->
+			val iterator = user.proxiesConfigs.iterator()
+			while (iterator.hasNext()) {
+				val configId = iterator.next().id
+				if (configId != null && configIds.contains(configId)) {
+					iterator.remove()
+				}
+			}
+		}
+
+		userRepository.flush()
 	}
 
 

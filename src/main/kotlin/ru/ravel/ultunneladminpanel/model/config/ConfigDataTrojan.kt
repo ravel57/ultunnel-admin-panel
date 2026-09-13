@@ -28,10 +28,10 @@ data class ConfigDataTrojan(
 	var trojanServer: String? = null,
 
 	@JsonProperty("server_port")
-	var serverPort: Long,
+	var serverPort: Long? = null,
 
 	@JsonProperty("password")
-	var password: String,
+	var password: String? = null,
 
 	@JsonIgnore
 	var sni: String? = null,

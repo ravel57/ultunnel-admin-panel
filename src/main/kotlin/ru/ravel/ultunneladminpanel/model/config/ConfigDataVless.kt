@@ -31,9 +31,9 @@ data class ConfigDataVless(
 	override var server: String?,
 
 	@JsonProperty("server_port")
-	var serverPort: Long,
+	var serverPort: Long? = null,
 
-	var uuid: String,
+	var uuid: String? = null,
 
 	@JdbcTypeCode(SqlTypes.JSON)
 	var tls: TlsSettings? = null,

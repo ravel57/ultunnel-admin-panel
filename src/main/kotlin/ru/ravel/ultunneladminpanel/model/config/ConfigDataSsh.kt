@@ -20,12 +20,12 @@ data class ConfigDataSsh(
 	override var server: String?,
 
 	@JsonProperty("server_port")
-	var serverPort: Long,
+	var serverPort: Long? = null,
 
 	@Column(name = "user_name")
-	var user: String,
+	var user: String? = null,
 
-	var password: String,
+	var password: String? = null,
 
 	@Transient
 	var tag: String? = "proxy",

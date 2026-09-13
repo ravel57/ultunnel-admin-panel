@@ -25,12 +25,12 @@ data class ConfigDataHysteria(
 	@Transient
 	var downMbps: Long? = 0,
 
-	var password: String,
+	var password: String? = null,
 
 	override var server: String?,
 
 	@JsonProperty("server_port")
-	var serverPort: Long,
+	var serverPort: Long? = null,
 
 	@Transient
 	var tls: Tls? = Tls(alpn = listOf("h3"), enabled = true, insecure = true),

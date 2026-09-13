@@ -6,4 +6,5 @@ data class UserProxyTypeHost(
 	val userId: Long,
 	val type: ProxyType,
 	val proxyServerId: Long,
+	val userProxyId: Long? = null,
 )

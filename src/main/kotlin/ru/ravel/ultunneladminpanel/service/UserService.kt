@@ -47,6 +47,40 @@ class UserService(
 
 
 	@Transactional
+	fun setUserEnabled(userId: Long, isEnabled: Boolean): User {
+		val user = userRepository.findById(userId).orElseThrow()
+		user.isEnabled = isEnabled
+		return userRepository.save(user)
+	}
+
+
+	@Transactional
+	fun deleteProxyFromUser(userProxyTypeHost: UserProxyTypeHost) {
+		val user = userRepository.findById(userProxyTypeHost.userId).orElseThrow()
+		val proxyServer = proxyServerRepository.findById(userProxyTypeHost.proxyServerId).orElseThrow()
+		val proxy = proxyServer.proxies
+			?.firstOrNull { it.type == userProxyTypeHost.type }
+			?: throw NoSuchElementException(
+				"Proxy ${userProxyTypeHost.type} is not configured on server ${userProxyTypeHost.proxyServerId}"
+			)
+
+		val proxyId = proxy.id
+			?: throw IllegalStateException("Proxy ${userProxyTypeHost.type} has no id")
+		val config = user.proxiesConfigs.firstOrNull { config ->
+			config.proxy?.id == proxyId &&
+				(userProxyTypeHost.userProxyId == null || config.id == userProxyTypeHost.userProxyId)
+		}
+			?: throw NoSuchElementException(
+				"User ${userProxyTypeHost.userId} does not have proxy ${userProxyTypeHost.type} on server ${userProxyTypeHost.proxyServerId}"
+			)
+
+		user.proxiesConfigs.remove(config)
+		userRepository.saveAndFlush(user)
+		configDataRepository.delete(config)
+	}
+
+
+	@Transactional
 	fun addProxyToUser(userProxyTypeHost: UserProxyTypeHost): ConfigData? {
 		val user = userRepository.findById(userProxyTypeHost.userId).orElseThrow()
 		val proxyServer = proxyServerRepository.findById(userProxyTypeHost.proxyServerId).orElseThrow()

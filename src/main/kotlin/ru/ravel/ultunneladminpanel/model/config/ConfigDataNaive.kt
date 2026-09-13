@@ -24,11 +24,11 @@ data class ConfigDataNaive(
 	override var server: String?,
 
 	@JsonProperty("server_port")
-	var serverPort: Long,
+	var serverPort: Long? = null,
 
-	var username: String,
+	var username: String? = null,
 
-	var password: String,
+	var password: String? = null,
 
 	@JdbcTypeCode(SqlTypes.JSON)
 	var tls: TlsSettings? = null,
@@ -38,7 +38,7 @@ data class ConfigDataNaive(
 
 	@JdbcTypeCode(SqlTypes.JSON)
 	@JsonProperty("udp_over_tcp")
-	var udpOverTcp: UdpOverTcp = UdpOverTcp(enabled = true, version = 2)
+	var udpOverTcp: UdpOverTcp? = UdpOverTcp(enabled = true, version = 2)
 
 ) : ConfigData(id = id, type = type, server = server) {
 

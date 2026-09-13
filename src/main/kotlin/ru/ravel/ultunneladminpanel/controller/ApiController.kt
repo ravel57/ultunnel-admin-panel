@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+import ru.ravel.ultunneladminpanel.dto.UserEnabledRequest
 import ru.ravel.ultunneladminpanel.dto.UserProxyTypeHost
 import ru.ravel.ultunneladminpanel.model.Proxy
 import ru.ravel.ultunneladminpanel.model.ProxyServer
@@ -43,6 +44,24 @@ class ApiController(
 	}
 
 
+	@DeleteMapping("/delete-server/{serverId}")
+	fun deleteServer(
+		@PathVariable serverId: Long,
+	): ResponseEntity<Void> {
+		proxyServerService.deleteServer(serverId)
+		return ResponseEntity.noContent().build()
+	}
+
+
+	@DeleteMapping("/delete-proxy/{proxyId}")
+	fun deleteProxy(
+		@PathVariable proxyId: Long,
+	): ResponseEntity<Void> {
+		proxyServerService.deleteProxy(proxyId)
+		return ResponseEntity.noContent().build()
+	}
+
+
 	@PostMapping("/add-proxy-to/{proxyServerId}")
 	fun addProxyToServer(
 		@PathVariable proxyServerId: Long,
@@ -74,11 +93,28 @@ class ApiController(
 	}
 
 
+	@PostMapping("/set-user-enabled")
+	fun setUserEnabled(
+		@RequestBody request: UserEnabledRequest,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(userService.setUserEnabled(request.userId, request.isEnabled))
+	}
+
+
 	@PostMapping("/add-proxy-to-user")
 	fun addProxyToUser(
 		@RequestBody userProxyTypeHost: UserProxyTypeHost,
 	): ResponseEntity<Any> {
 		return ResponseEntity.ok().body(userService.addProxyToUser(userProxyTypeHost))
+	}
+
+
+	@DeleteMapping("/delete-proxy-from-user")
+	fun deleteProxyFromUser(
+		@RequestBody userProxyTypeHost: UserProxyTypeHost,
+	): ResponseEntity<Void> {
+		userService.deleteProxyFromUser(userProxyTypeHost)
+		return ResponseEntity.noContent().build()
 	}
 
 
