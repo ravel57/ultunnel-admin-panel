@@ -80,12 +80,11 @@ object ConfigTemplate {
 				|      "strict_route": true,
 				|      "stack": "system",
 				|      "address": [
-				|        "198.18.0.1/30"
+				|        "198.18.0.1/30",
+				|        "fdfe:dcba:9876::1/126"
 				|      ],
 				|      "mtu": 1360,
-				|      "endpoint_independent_nat": true,
-				|      "sniff": true,
-				|      "sniff_override_destination": true
+				|      "endpoint_independent_nat": true
 				|    }
 				|  ],
 				|  "outbounds": [
@@ -102,7 +101,10 @@ object ConfigTemplate {
 				|  "route": {
 				|    "auto_detect_interface": true,
 				|    "override_android_vpn": true,
-				|    "default_domain_resolver": "bootstrap",
+				|    "default_domain_resolver": {
+				|      "server": "bootstrap",
+				|      "strategy": "ipv4_only"
+				|    },
 				|    "rules": [
 				|      {
 				|        "inbound": ["tun-in"],
@@ -111,6 +113,10 @@ object ConfigTemplate {
 				|      {
 				|        "protocol": ["dns"],
 				|        "action": "hijack-dns"
+				|      },
+				|      {
+				|        "ip_version": 6,
+				|        "action": "reject"
 				|      },
 				|      {
 				|        "inbound": ["tun-in"],
@@ -161,7 +167,8 @@ object ConfigTemplate {
 				|      "strict_route": true,
 				|      "stack": "gvisor",
 				|      "address": [
-				|        "198.18.0.1/30"
+				|        "198.18.0.1/30",
+				|        "fdfe:dcba:9876::1/126"
 				|      ],
 				|      "mtu": 1360,
 				|      "endpoint_independent_nat": true
@@ -180,7 +187,10 @@ object ConfigTemplate {
 				|  ],
 				|  "route": {
 				|    "auto_detect_interface": true,
-				|    "default_domain_resolver": "bootstrap",
+				|    "default_domain_resolver": {
+				|      "server": "bootstrap",
+				|      "strategy": "ipv4_only"
+				|    },
 				|    "rules": [
 				|      {
 				|        "inbound": ["tun-in"],
@@ -189,6 +199,10 @@ object ConfigTemplate {
 				|      {
 				|        "protocol": ["dns"],
 				|        "action": "hijack-dns"
+				|      },
+				|      {
+				|        "ip_version": 6,
+				|        "action": "reject"
 				|      },
 				|      {
 				|        "inbound": ["tun-in"],
@@ -236,7 +250,8 @@ object ConfigTemplate {
 				|	  "tag": "tun-in",
 				|	  "interface_name": "utun99",
 				|	  "address": [
-				|	    "198.18.0.1/30"
+				|	    "198.18.0.1/30",
+				|	    "fdfe:dcba:9876::1/126"
 				|	  ],
 				|	  "auto_route": true,
 				|	  "strict_route": true,
@@ -259,7 +274,10 @@ object ConfigTemplate {
 				|  ],
 				|  "route": {
 				|	"auto_detect_interface": false,
-				|	"default_domain_resolver": "bootstrap",
+				|	"default_domain_resolver": {
+				|	  "server": "bootstrap",
+				|	  "strategy": "ipv4_only"
+				|	},
 				|	"rules": [
 				|	  {
 				|		"inbound": ["tun-in"],
@@ -268,6 +286,10 @@ object ConfigTemplate {
 				|	  {
 				|		"protocol": ["dns"],
 				|		"action": "hijack-dns"
+				|	  },
+				|	  {
+				|		"ip_version": 6,
+				|		"action": "reject"
 				|	  },
 				|	  {
 				|		"inbound": ["tun-in"],

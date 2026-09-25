@@ -50,9 +50,11 @@ data class ConfigDataVless(
 //		val encodedEch = URLEncoder.encode(tls?.ech?.config?.get(0) ?: "", "UTF-8")
 		this.url = buildString {
 			append("${type}://${uuid}@${server}:${serverPort}")
-			append("?type=grpc")
+			append("?type=xhttp")
 			append("&encryption=none")
-			append("&serviceName=${transport?.serviceName ?: "GunService"}")
+			append("&path=${URLEncoder.encode(transport?.path ?: "/", "UTF-8")}")
+			append("&host=${transport?.host ?: (tls?.serverName ?: server)}")
+			append("&mode=${transport?.mode ?: "auto"}")
 			append("&security=tls")
 			append("&fp=chrome")
 			append("&alpn=${tls?.alpn?.joinToString(",") ?: ""}")

@@ -204,7 +204,7 @@ class ProxyServerService(
 			.mapNotNull { it.id }
 			.toSet()
 
-		deleteUserConfigsForProxyIds(proxyIds)
+		deleteConfigsForProxies(proxyIds, configType = null)
 
 		// Bulk deletes/updates bypass Hibernate managed state. Drop every stale
 		// ConfigData/User/Proxy instance, then load a fresh server graph and let
@@ -230,12 +230,15 @@ class ProxyServerService(
 			throw NoSuchElementException("Proxy $proxyId is not attached to any server")
 		}
 
+		// Delete only configs of this protocol. Legacy rows of other protocols may
+		// point at the same Proxy row; deleting those would drop configs the admin
+		// never asked to remove (and used to fail on WireGuard child-table FKs).
 		val proxyType = proxyRepository.findById(proxyId).orElseThrow().type
-		if (proxyType == HYSTERIA2) {
-			deleteHysteriaUserConfigsForProxyId(proxyId)
-		} else {
-			deleteUserConfigsForProxyIds(setOf(proxyId))
-		}
+		deleteConfigsForProxies(setOf(proxyId), proxyType?.configType)
+
+		// Whatever still references this proxy is a foreign-type legacy config:
+		// keep the config, drop the invalid FK so the proxy itself can be removed.
+		configDataRepository.detachAllFromProxy(proxyId)
 
 		// Bulk deletes/updates bypass Hibernate's managed entity state. In the
 		// Hysteria2 case ConfigData entities loaded during cleanup still referenced
@@ -252,44 +255,54 @@ class ProxyServerService(
 	}
 
 
-	private fun deleteHysteriaUserConfigsForProxyId(proxyId: Long) {
-		// A protocol deletion must not delete configs of another protocol just
-		// because legacy data points them at the same Proxy row. In particular,
-		// deleting Hysteria2 used to make Hibernate attempt to delete a
-		// ConfigDataWireguard row and then fail on its ElementCollection FK.
-		val configsToDelete = configDataRepository.findAllByProxy_IdAndType(proxyId, "hysteria2")
-		val configIds = configsToDelete.mapNotNull { it.id }.toHashSet()
-
-		unlinkConfigsFromUsers(configIds)
-
-		// Restrict the JOINED-inheritance bulk delete to Hysteria2 rows only.
-		// This keeps WireGuard/Amnezia child tables completely out of the delete.
-		configDataRepository.deleteAllByProxyIdAndType(proxyId, "hysteria2")
-
-		// Old/broken rows of another config type may still reference this proxy.
-		// Preserve those configs, but detach the invalid FK so orphanRemoval can
-		// safely delete the Hysteria2 Proxy itself.
-		configDataRepository.detachAllFromProxy(proxyId)
-	}
-
-
-	private fun deleteUserConfigsForProxyIds(proxyIds: Set<Long>) {
-		if (proxyIds.isEmpty()) return
+	/**
+	 * Deletes user configs of [configType] ("vless", "hysteria2", ...) that belong to
+	 * [proxyIds], or configs of every type when [configType] is null. Works straight on
+	 * config_data, so configs that are no longer linked to any user are removed too.
+	 * Returns the number of deleted configs.
+	 */
+	@Transactional
+	fun deleteConfigsForProxies(proxyIds: Set<Long>, configType: String?): Int {
+		if (proxyIds.isEmpty()) return 0
 
 		// Read config_data directly: legacy/orphaned configs may no longer be
 		// reachable through User.proxiesConfigs, while proxy_id still blocks the FK.
-		val configsToDelete = configDataRepository.findAllByProxy_IdIn(proxyIds)
-		if (configsToDelete.isEmpty()) return
+		val configsToDelete = if (configType == null) {
+			configDataRepository.findAllByProxy_IdIn(proxyIds)
+		} else {
+			configDataRepository.findAllByProxy_IdInAndType(proxyIds, configType)
+		}
+		if (configsToDelete.isEmpty()) return 0
 
 		val configIds = configsToDelete.mapNotNull { it.id }.toHashSet()
+		if (configIds.isEmpty()) return 0
 
 		unlinkConfigsFromUsers(configIds)
+		deleteConfigChildRows(configIds)
 
 		// Use a bulk delete instead of EntityManager.remove() for every ConfigData.
 		// With JOINED inheritance, legacy/inconsistent subclass rows can otherwise
 		// trigger StaleObjectStateException when Hibernate expects one exact row
 		// to be deleted from (for example) config_data_vless.
-		configDataRepository.deleteAllByProxyIds(proxyIds)
+		return configDataRepository.deleteAllByConfigIds(configIds)
+	}
+
+
+	/**
+	 * WireGuard/Amnezia configs own @ElementCollection and peer rows. A JPQL bulk
+	 * delete leaves those behind, and their FK to config_data_wireguard then aborts
+	 * the whole delete, so remove them first.
+	 */
+	private fun deleteConfigChildRows(configIds: Set<Long>) {
+		if (configIds.isEmpty()) return
+
+		configDataRepository.deleteWireguardPeerAllowedIps(configIds)
+		configDataRepository.deleteWireguardPeerReserved(configIds)
+		configDataRepository.deleteWireguardPeers(configIds)
+		configDataRepository.deleteWireguardLocalAddresses(configIds)
+		configDataRepository.deleteWireguardReserved(configIds)
+		configDataRepository.deleteAmneziaLocalAddresses(configIds)
+		configDataRepository.deleteAmneziaReserved(configIds)
 	}
 
 
@@ -546,7 +559,7 @@ class ProxyServerService(
 				val stream = objectField(inbound.get("streamSettings"), objectMapper)
 					?: objectMapper.createObjectNode()
 				val tlsSettings = objectField(stream.get("tlsSettings"), objectMapper)
-				val grpcSettings = objectField(stream.get("grpcSettings"), objectMapper)
+				val xhttpSettings = objectField(stream.get("xhttpSettings"), objectMapper)
 
 				val sni = tlsSettings?.path("serverName")?.asText()?.takeIf { it.isNotBlank() }
 				val alpn = tlsSettings?.path("alpn")
@@ -591,11 +604,11 @@ class ProxyServerService(
 						),
 					),
 					transport = TransportSettings(
-						type = stream.path("network").asText("grpc"),
-						serviceName = grpcSettings?.path("serviceName")?.asText()
-							?.takeIf { it.isNotBlank() } ?: "GunService",
-						idleTimeout = "15s",
-						pingTimeout = "15s",
+						type = "xhttp",
+						host = xhttpSettings?.path("host")?.asText()?.takeIf { it.isNotBlank() }
+							?: (sni ?: host),
+						path = xhttpSettings?.path("path")?.asText()?.takeIf { it.isNotBlank() } ?: "/",
+						mode = xhttpSettings?.path("mode")?.asText()?.takeIf { it.isNotBlank() } ?: "auto",
 					),
 				).apply {
 					this.proxy = proxy

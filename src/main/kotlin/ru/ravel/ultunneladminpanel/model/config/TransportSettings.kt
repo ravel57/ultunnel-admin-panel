@@ -1,21 +1,37 @@
 package ru.ravel.ultunneladminpanel.model.config
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.JsonProperty
 
 
+@JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
 data class TransportSettings(
 	@JsonProperty("type")
-	val type: String = "grpc",
+	val type: String = "xhttp",
 
-	@JsonProperty("service_name")
-	val serviceName: String = "GunService",
+	@JsonProperty("host")
+	val host: String? = null,
 
-	@JsonProperty("idle_timeout")
-	val idleTimeout: String = "15s",
+	@JsonProperty("path")
+	val path: String = "/",
 
-	@JsonProperty("ping_timeout")
-	val pingTimeout: String = "15s",
+	@JsonProperty("mode")
+	val mode: String = "auto",
 
-	@JsonProperty("permit_without_stream")
-	val permitWithoutStream: Boolean = false
+	@JsonProperty("http_version")
+	val httpVersion: String? = null,
+
+	@JsonProperty("no_grpc_header")
+	val noGrpcHeader: Boolean? = null,
+
+	@JsonProperty("no_sse_header")
+	val noSseHeader: Boolean? = null,
+
+	@JsonProperty("max_post_size")
+	val maxPostSize: Int? = null,
+
+	@JsonProperty("max_buffered_posts")
+	val maxBufferedPosts: Int? = null,
 )

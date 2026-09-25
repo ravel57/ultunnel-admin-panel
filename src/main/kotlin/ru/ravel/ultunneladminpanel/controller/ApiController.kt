@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+import ru.ravel.ultunneladminpanel.dto.ProxyBulkRequest
 import ru.ravel.ultunneladminpanel.dto.UserEnabledRequest
 import ru.ravel.ultunneladminpanel.dto.UserProxyTypeHost
 import ru.ravel.ultunneladminpanel.model.Proxy
@@ -106,6 +107,22 @@ class ApiController(
 		@RequestBody userProxyTypeHost: UserProxyTypeHost,
 	): ResponseEntity<Any> {
 		return ResponseEntity.ok().body(userService.addProxyToUser(userProxyTypeHost))
+	}
+
+
+	@PostMapping("/add-proxy-to-all-users")
+	fun addProxyToAllUsers(
+		@RequestBody request: ProxyBulkRequest,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(userService.addProxyToAllUsers(request))
+	}
+
+
+	@DeleteMapping("/delete-proxy-from-all-users")
+	fun deleteProxyFromAllUsers(
+		@RequestBody request: ProxyBulkRequest,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(userService.deleteProxyFromAllUsers(request))
 	}
 
 
