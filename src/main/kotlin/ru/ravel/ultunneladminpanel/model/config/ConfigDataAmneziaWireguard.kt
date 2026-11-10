@@ -1,11 +1,22 @@
 package ru.ravel.ultunneladminpanel.model.config
 
 import com.fasterxml.jackson.annotation.JsonIgnore
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.JsonProperty
 import jakarta.persistence.*
-import ru.ravel.ultunneladminpanel.model.Proxy
+import java.util.Base64
 
+/**
+ * AmneziaWG config of one user, provisioned through the 3x-ui panel ("amneziawg" inbound).
+ *
+ * The structured fields below describe the tunnel the way a WireGuard outbound does, while
+ * [clientConfig] keeps the full AmneziaWG .conf text the panel's own settings produce — the
+ * obfuscation parameters (Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5, AWG 3.x options) have no place in
+ * a WireGuard outbound, and a client that drops any of them cannot complete the handshake.
+ * [url] is the `vpn://` link the AmneziaVPN app imports, built from that same text.
+ */
 @Entity
+@JsonInclude(JsonInclude.Include.NON_NULL)
 class ConfigDataAmneziaWireguard(
 
 	@Id
@@ -58,15 +69,28 @@ class ConfigDataAmneziaWireguard(
 
 	var network: String? = null,
 
-	var gso: Boolean? = null
+	var gso: Boolean? = null,
 
-) : ConfigData(id = id, type = type, server = server) {
+	/* DNS servers of the inbound, comma separated. */
+	@JsonIgnore
+	var dns: String? = null,
+
+	/* The full AmneziaWG client .conf, exactly as the panel's own export produces it. */
+	@JsonIgnore
+	@Column(columnDefinition = "text")
+	var clientConfig: String? = null,
+
+	) : ConfigData(id = id, type = type, server = server) {
 
 	override fun fillFields(): ConfigDataAmneziaWireguard {
-		this.server = proxy?.serverIp // super.server
+		this.server = proxy?.serverIp ?: this.server
 		this.type = super.type
 		this.tag = type?.lowercase()
-		this.url = ""
+		/* vpn:// is the AmneziaVPN import scheme, the same one 3x-ui emits in subscriptions. */
+		this.url = clientConfig
+			?.takeIf { it.isNotBlank() }
+			?.let { "vpn://" + Base64.getUrlEncoder().withoutPadding().encodeToString(it.toByteArray()) }
+			?: ""
 		return this
 	}
 

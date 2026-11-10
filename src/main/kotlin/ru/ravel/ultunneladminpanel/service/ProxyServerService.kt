@@ -44,7 +44,6 @@ class ProxyServerService(
 	private val userRepository: UserRepository,
 	private val configDataRepository: ConfigDataRepository,
 	private val entityManager: EntityManager,
-	private val hysteriaService: HysteriaService,
 ) {
 
 	private data class ThreeXuiV3Session(
@@ -506,6 +505,192 @@ class ProxyServerService(
 			?: error("3x-ui inbound for protocol '$protocol' not found")
 	}
 
+	private fun listThreeXuiInbounds(
+		session: ThreeXuiSession,
+		objectMapper: ObjectMapper,
+	): List<ObjectNode> {
+		val request = Request.Builder()
+			.url("${session.baseUrl}/panel/api/inbounds/list")
+			.header("Accept", "application/json")
+			.header("Cookie", session.cookie)
+			.get()
+			.build()
+
+		val root = readJsonResponse(request, objectMapper, "list inbounds")
+		val inbounds = root.path("obj")
+		if (!inbounds.isArray) error("3x-ui list inbounds returned invalid obj")
+
+		return inbounds.mapNotNull { it as? ObjectNode }
+	}
+
+	/**
+	 * The inbound new clients of [protocol] are provisioned into. One server may run several
+	 * inbounds of the same protocol, so Proxy.proxyPort ([preferredPort]) picks the one the
+	 * admin configured by hand; without it the newest inbound wins, as everywhere else here.
+	 */
+	private fun selectThreeXuiInbound(
+		session: ThreeXuiSession,
+		protocol: String,
+		preferredPort: Long?,
+		objectMapper: ObjectMapper,
+	): ObjectNode {
+		val matching = listThreeXuiInbounds(session, objectMapper)
+			.filter { it.path("protocol").asText().equals(protocol, ignoreCase = true) }
+		if (matching.isEmpty()) {
+			error("3x-ui inbound for protocol '$protocol' not found")
+		}
+
+		val byPort = preferredPort
+			?.takeIf { it > 0 }
+			?.let { port -> matching.filter { it.path("port").asLong() == port } }
+			?.takeIf { it.isNotEmpty() }
+
+		return (byPort ?: matching).last()
+	}
+
+	/**
+	 * Re-reads one inbound. WireGuard and AmneziaWG keep their per-client tunnel fields
+	 * (keys, addresses) in the inbound's own settings JSON instead of the shared clients
+	 * table, so the generated values have to be read back from here.
+	 */
+	private fun getThreeXuiInboundById(
+		session: ThreeXuiSession,
+		inboundId: Long,
+		objectMapper: ObjectMapper,
+	): ObjectNode {
+		val request = Request.Builder()
+			.url("${session.baseUrl}/panel/api/inbounds/get/$inboundId")
+			.header("Accept", "application/json")
+			.header("Cookie", session.cookie)
+			.get()
+			.build()
+
+		val root = readJsonResponse(request, objectMapper, "get inbound")
+		return root.path("obj") as? ObjectNode
+			?: error("3x-ui get inbound $inboundId returned invalid obj")
+	}
+
+	/**
+	 * The client record of [email], or null when the panel has none. In 3x-ui v3 a client is
+	 * one global identity attached to many inbounds, so this is also how an existing client
+	 * is found before creating a duplicate.
+	 */
+	private fun findThreeXuiClientRecord(
+		session: ThreeXuiSession,
+		email: String,
+		objectMapper: ObjectMapper,
+	): JsonNode? {
+		val request = Request.Builder()
+			.url("${session.baseUrl}/panel/api/clients/list")
+			.header("Accept", "application/json")
+			.header("Cookie", session.cookie)
+			.get()
+			.build()
+
+		val root = readJsonResponse(request, objectMapper, "list clients")
+		return root.path("obj")
+			.firstOrNull { it.path("email").asText() == email }
+	}
+
+	/**
+	 * Creates [client] on [inboundId], or attaches the identity that already carries this
+	 * email. The second case is not an edge case: the local transaction may have failed after
+	 * the panel call, and the same user may already hold this protocol on another inbound.
+	 */
+	private fun upsertThreeXuiClient(
+		session: ThreeXuiSession,
+		inboundId: Long,
+		email: String,
+		client: ObjectNode,
+		objectMapper: ObjectMapper,
+	) {
+		val existing = findThreeXuiClientRecord(session, email, objectMapper)
+		if (existing == null) {
+			addThreeXuiClient(session, inboundId, client, objectMapper)
+			return
+		}
+
+		val payload = objectMapper.createObjectNode().apply {
+			putArray("inboundIds").add(inboundId)
+		}
+		val body = objectMapper.writeValueAsString(payload)
+			.toRequestBody("application/json".toMediaType())
+		val request = Request.Builder()
+			.header("Content-Type", "application/json")
+			.header("Accept", "application/json")
+			.header("Cookie", session.cookie)
+			.header("X-CSRF-Token", session.csrfToken)
+			.url("${session.baseUrl}/panel/api/clients/${URLEncoder.encode(email, UTF_8.name())}/attach")
+			.post(body)
+			.build()
+
+		readJsonResponse(request, objectMapper, "attach client")
+	}
+
+	/**
+	 * The settings JSON of one inbound. WireGuard and AmneziaWG keep the per-client tunnel
+	 * fields (keys, addresses) only here, and it is also where a value the panel generated
+	 * while attaching an existing identity shows up first.
+	 */
+	private fun getThreeXuiInboundSettings(
+		session: ThreeXuiSession,
+		inboundId: Long,
+		objectMapper: ObjectMapper,
+	): ObjectNode {
+		val inbound = getThreeXuiInboundById(session, inboundId, objectMapper)
+		return objectField(inbound.get("settings"), objectMapper)
+			?: error("3x-ui inbound $inboundId has no settings")
+	}
+
+	private fun findThreeXuiSettingsClient(settings: ObjectNode, email: String): JsonNode? {
+		return settings.path("clients")
+			.takeIf { it.isArray }
+			?.firstOrNull { it.path("email").asText() == email }
+	}
+
+	/**
+	 * Hysteria2 obfuscation of an inbound as (type, password), or null when it is off.
+	 * The panel stores it as a "salamander" UDP mask under streamSettings.finalmask.
+	 */
+	private fun hysteriaObfs(stream: ObjectNode): Pair<String, String>? {
+		val finalmask = stream.path("finalmask")
+		val masks = finalmask.path("udp")
+		if (!masks.isArray) return null
+
+		return masks
+			.firstOrNull { it.path("type").asText() == "salamander" }
+			?.path("settings")
+			?.path("password")
+			?.asText()
+			?.takeIf { it.isNotBlank() }
+			?.let { "salamander" to it }
+	}
+
+	/**
+	 * The UDP port-hopping range of a Hysteria2 inbound ("2000-3000,5000"), or null when
+	 * hopping is off. xray-core 26.9.9 moved it from finalmask.quicParams.udpHop into a
+	 * "udphop" mask, so both places are read.
+	 */
+	private fun hysteriaHopPorts(stream: ObjectNode): String? {
+		val finalmask = stream.path("finalmask")
+		val masks = finalmask.path("udp")
+		if (masks.isArray) {
+			masks
+				.firstOrNull { it.path("type").asText() == "udphop" }
+				?.path("settings")
+				?.path("remotePorts")
+				?.asText()
+				?.trim()
+				?.takeIf { it.isNotEmpty() }
+				?.let { return it }
+		}
+
+		return finalmask.path("quicParams").path("udpHop").path("ports")
+			.asText("")
+			.trim()
+			.takeIf { it.isNotEmpty() }
+	}
+
 	private fun objectField(node: JsonNode?, objectMapper: ObjectMapper): ObjectNode? {
 		if (node == null || node.isNull) return null
 		if (node.isObject) return node as ObjectNode
@@ -839,17 +1024,86 @@ class ProxyServerService(
 				}
 			}
 
+			/*
+			 * Hysteria2 is provisioned through 3x-ui itself: the panel runs it as a
+			 * "hysteria" inbound with streamSettings.hysteriaSettings.version = 2, so the
+			 * standalone Hysteria HTTP API is no longer involved.
+			 */
 			HYSTERIA2 -> {
-				val addNewUser = hysteriaService.addNewUser(proxy, host, user)
-				val hysteriaHost = if (proxy.useSubDomain!!) {
+				val protocol = "hysteria"
+				val session = loginThreeXui(host, proxy, objectMapper)
+				val inbound = selectThreeXuiInbound(session, protocol, proxy.proxyPort, objectMapper)
+				val inboundId = inbound.path("id").asLong()
+				val port = inbound.path("port").asLong()
+				if (inboundId <= 0L) error("3x-ui Hysteria inbound has invalid id")
+				if (port !in 1L..65535L) error("3x-ui Hysteria inbound has invalid port")
+
+				val stream = objectField(inbound.get("streamSettings"), objectMapper)
+					?: objectMapper.createObjectNode()
+				val hysteriaSettings = objectField(stream.get("hysteriaSettings"), objectMapper)
+				val version = hysteriaSettings?.path("version")?.asInt(2) ?: 2
+				if (version == 1) {
+					error("3x-ui inbound $inboundId runs Hysteria v1, and the client config speaks hysteria2 only")
+				}
+
+				val tlsSettings = objectField(stream.get("tlsSettings"), objectMapper)
+				val sni = tlsSettings?.path("serverName")?.asText()?.takeIf { it.isNotBlank() }
+				val alpn = tlsSettings?.path("alpn")
+					?.takeIf { it.isArray }
+					?.map { it.asText() }
+					?.filter { it.isNotBlank() }
+					?.takeIf { it.isNotEmpty() }
+					?: listOf("h3")
+				val obfs = hysteriaObfs(stream)
+
+				val email = "${user.name}-hysteria2"
+				val client = objectMapper.createObjectNode().apply {
+					put("email", email)
+					/* The panel generates one when this is blank; passing it keeps the created
+					   credential in hand instead of depending on reading it back. */
+					put("auth", UUID.randomUUID().toString().replace("-", ""))
+					put("subId", randomThreeXuiSubId())
+					put("limitIp", 0)
+					put("totalGB", 0)
+					put("expiryTime", 0)
+					put("tgId", 0)
+					put("comment", "")
+					put("reset", 0)
+					put("enable", true)
+				}
+				upsertThreeXuiClient(session, inboundId, email, client, objectMapper)
+
+				/*
+				 * Read the auth back: an attached client keeps the one it already had, and an
+				 * identity created for another protocol only gets one while being attached —
+				 * that one reaches the inbound's settings before the clients table.
+				 */
+				val auth = findThreeXuiClientRecord(session, email, objectMapper)
+					?.path("auth")
+					?.asText()
+					?.takeIf { it.isNotBlank() }
+					?: findThreeXuiSettingsClient(getThreeXuiInboundSettings(session, inboundId, objectMapper), email)
+						?.path("auth")
+						?.asText()
+						?.takeIf { it.isNotBlank() }
+					?: error("3x-ui returned no Hysteria auth for client $email")
+
+				val hysteriaHost = if (proxy.useSubDomain == true) {
 					"${proxy.subdomain}.${host}"
 				} else {
 					host
 				}
+
 				return ConfigDataHysteria(
-					password = "${addNewUser.uuid}:${addNewUser.password}",
+					password = auth,
 					server = hysteriaHost,
-					serverPort = proxy.proxyPort!!,
+					serverPort = port,
+					sni = sni ?: hysteriaHost,
+					alpnList = alpn.joinToString(","),
+					insecure = true,
+					obfsType = obfs?.first,
+					obfsPassword = obfs?.second,
+					portHopping = hysteriaHopPorts(stream),
 				).apply {
 					this.proxy = proxy
 				}
@@ -867,7 +1121,7 @@ class ProxyServerService(
 				}
 			}
 
-			WIREGUARD, AMNEZIA_WG -> {
+			WIREGUARD -> {
 				val url = if (proxy.useSubDomain!!) {
 					"https://${proxy.subdomain}.${host}"
 				} else {
@@ -888,7 +1142,82 @@ class ProxyServerService(
 				val file = File("vpn.conf")
 				val config = file.readText().trim()
 				file.delete()
-				return WireguardConfigParser.parseConfig(config, host)
+				return WireguardConfigParser.parseConfig(config, host).apply {
+					this.proxy = proxy
+				}
+			}
+
+			/*
+			 * AmneziaWG is provisioned through 3x-ui as well ("amneziawg" inbound, native
+			 * since 3x-ui v3). The keypair and the tunnel address are left to the panel: it
+			 * owns the inbound's subnet and knows which addresses are already taken.
+			 */
+			AMNEZIA_WG -> {
+				val protocol = "amneziawg"
+				val session = loginThreeXui(host, proxy, objectMapper)
+				val inbound = selectThreeXuiInbound(session, protocol, proxy.proxyPort, objectMapper)
+				val inboundId = inbound.path("id").asLong()
+				val port = inbound.path("port").asLong()
+				if (inboundId <= 0L) error("3x-ui AmneziaWG inbound has invalid id")
+				if (port !in 1L..65535L) error("3x-ui AmneziaWG inbound has invalid port")
+
+				val email = "${user.name}-amneziawg"
+				val client = objectMapper.createObjectNode().apply {
+					put("email", email)
+					put("subId", randomThreeXuiSubId())
+					put("limitIp", 0)
+					put("totalGB", 0)
+					put("expiryTime", 0)
+					put("tgId", 0)
+					put("comment", "")
+					put("reset", 0)
+					put("enable", true)
+				}
+				upsertThreeXuiClient(session, inboundId, email, client, objectMapper)
+
+				/* The tunnel fields live in the inbound's settings JSON, not in the clients
+				   table: one identity attached to two tunnels has two different addresses. */
+				val settings = getThreeXuiInboundSettings(session, inboundId, objectMapper)
+				val serverSettings = objectField(settings.get("server"), objectMapper)
+					?: error("3x-ui AmneziaWG inbound $inboundId has no server block")
+				val clientSettings = findThreeXuiSettingsClient(settings, email)
+					?: error("3x-ui did not return the AmneziaWG client $email")
+
+				/* A tunnel endpoint is dialled over UDP, so the panel's subdomain is only
+				   usable when it resolves to the server itself. */
+				val endpoint = when {
+					proxy.useSubDomain == true -> "${proxy.subdomain}.${host}"
+					else -> proxy.serverIp ?: host
+				}
+				val remark = listOfNotNull(
+					inbound.path("remark").asText("").takeIf { it.isNotBlank() },
+					user.name,
+				).joinToString(" - ")
+
+				return ConfigDataAmneziaWireguard(
+					server = endpoint,
+					serverPort = port,
+					localAddress = AmneziaWgConfigBuilder.allowedIps(clientSettings),
+					privateKey = clientSettings.path("privateKey").asText().takeIf { it.isNotBlank() },
+					peerPublicKey = serverSettings.path("publicKey").asText().takeIf { it.isNotBlank() },
+					preSharedKey = clientSettings.path("preSharedKey").asText().takeIf { it.isNotBlank() },
+					mtu = AmneziaWgConfigBuilder.effectiveMtu(
+						serverSettings.path("mtu").asInt(0),
+						serverSettings.path("s4").asInt(0),
+					),
+					dns = AmneziaWgConfigBuilder.dnsServers(serverSettings)
+						.joinToString(",")
+						.takeIf { it.isNotBlank() },
+					clientConfig = AmneziaWgConfigBuilder.build(
+						server = serverSettings,
+						client = clientSettings,
+						endpoint = endpoint,
+						port = port,
+						remark = remark,
+					),
+				).apply {
+					this.proxy = proxy
+				}
 			}
 
 			NAIVE -> {
