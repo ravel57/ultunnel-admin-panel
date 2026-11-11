@@ -470,10 +470,23 @@ class ProxyServerService(
 		objectMapper: ObjectMapper,
 		operation: String,
 	): JsonNode {
-		return client.newCall(request).execute().use { response ->
+		// The panel deliberately masks unauthenticated non-XHR API calls as empty 404s.
+		val apiRequest = request.newBuilder()
+			.header("X-Requested-With", "XMLHttpRequest")
+			.build()
+		return client.newCall(apiRequest).execute().use { response ->
 			val responseBody = response.readBodyOrEmpty()
 			if (!response.isSuccessful) {
 				val detail = responseBody.ifBlank { "empty body" }
+				val endpoint = "${response.request.method} ${response.request.url}"
+				if (response.code == 401) {
+					error("3x-ui $operation failed: HTTP 401 at $endpoint. " +
+						"The API did not accept the logged-in session. Check session cookies and reverse-proxy routing to the same panel instance.")
+				}
+				if (response.code == 404) {
+					error("3x-ui $operation failed: HTTP 404 at $endpoint: $detail. " +
+						"Check the panel base path, reverse-proxy routing and installed panel version.")
+				}
 				if (response.code == 403) {
 					error(
 						"3x-ui $operation failed: HTTP 403: $detail. " +
