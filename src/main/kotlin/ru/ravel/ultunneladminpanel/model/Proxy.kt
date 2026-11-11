@@ -23,6 +23,7 @@ data class Proxy (
 	var type: ProxyType? = null,
 
 	var proxyPort: Long? = null,
+    var inboundId: Long? = null,
 
 	var serverIp: String? = null,
 )

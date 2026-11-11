@@ -106,7 +106,10 @@ class ApiController(
 	fun addProxyToUser(
 		@RequestBody userProxyTypeHost: UserProxyTypeHost,
 	): ResponseEntity<Any> {
-		return ResponseEntity.ok().body(userService.addProxyToUser(userProxyTypeHost))
+		/* fillFields as /get-all-users does it: without it the fresh config reaches the UI
+		   with no url, and the card looks empty until the page is reloaded. */
+		val configData = userService.addProxyToUser(userProxyTypeHost).fillFields()
+		return ResponseEntity.ok().body(configData)
 	}
 
 

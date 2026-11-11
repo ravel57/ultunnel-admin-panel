@@ -10,9 +10,17 @@ enum class ProxyType(val configType: String) {
 	TROJAN("trojan"),
 	TROJAN2("trojan"),
 	HYSTERIA2("hysteria2"),
+	TUIC("tuic"),
+	MASQUE("masque"),
+	ANYTLS("anytls"),
+	SHADOWTLS("shadowtls"),
+	TRUSTTUNNEL("trusttunnel"),
 	SSH("ssh"),
 	WIREGUARD("wireguard"),
-	AMNEZIA_WG("amnezia_wireguard"),
+	// Must uppercase to the enum name itself: the frontend falls back to comparing
+	// config.type against this enum's name when it has no nested proxy to match by id
+	// (ProxyCard.vue's matchesProtocol/normalizeType uppercase-compares both sides).
+	AMNEZIA_WG("amnezia_wg"),
 	NAIVE("naive"),
 	;
 }

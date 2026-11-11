@@ -8,7 +8,7 @@ import ru.ravel.ultunneladminpanel.service.SerializationContext
 
 object ConfigTemplate {
 
-	private val mapper: ObjectMapper = ObjectMapper().registerModule(KotlinModule())
+	private val mapper: ObjectMapper = ObjectMapper().registerModule(KotlinModule.Builder().build())
 
 	fun serializeConfig(configData: ConfigData, ignoreUrl: Boolean, platform: String): String {
 		val excludes = mutableSetOf<String>()
@@ -24,7 +24,19 @@ object ConfigTemplate {
 			SimpleBeanPropertyFilter.serializeAllExcept(excludes)
 		}
 		val filters = SimpleFilterProvider().addFilter("configFilter", filter)
-		return mapper.writer(filters).writeValueAsString(configData)
+		/*
+		 * Tells ConfigDataAmneziaWireguard.typeJson (and anything else that needs to tell
+		 * this call apart from /get-all-users, which serializes ConfigData straight through
+		 * Spring's own mapper, outside this method) that this is the sing-box-facing
+		 * serialization, so "type" must be the literal "wireguard" sing-box understands
+		 * rather than the panel's own "amnezia_wireguard" bookkeeping value.
+		 */
+		SerializationContext.setConfigCall(true)
+		try {
+			return mapper.writer(filters).writeValueAsString(configData)
+		} finally {
+			SerializationContext.clearConfigCall()
+		}
 	}
 
 	fun getConfig(configData: ConfigData, platform: String = ""): String {
@@ -41,6 +53,29 @@ object ConfigTemplate {
 		val serializedConfigData = serializeConfig(configData, ignoreUrl = true, platform)
 		SerializationContext.setControllerCall(true)
 		SerializationContext.clear()
+
+		/*
+		 * WireGuard (plain or AmneziaWG) is an endpoint in sing-box since 1.11.0, not an
+		 * outbound: it has no "outbounds"-only representation any more, and route rules
+		 * select it by tag exactly like an outbound ("outbound": "proxy" also resolves
+		 * endpoint tags). Every other protocol here is still a real outbound.
+		 */
+		val isWireGuardEndpoint = configData is ConfigDataWireguard || configData is ConfigDataAmneziaWireguard ||
+            (configData is ConfigDataNativeProxy && configData.endpoint == true)
+		val endpointsSection = if (isWireGuardEndpoint) {
+			"\"endpoints\": [\n    ${serializedConfigData}\n  ],\n  "
+		} else {
+			""
+		}
+		val auxiliaryOutbounds = if (configData is ConfigDataNativeProxy) {
+			mapper.readTree(configData.auxiliaryOutboundsJson).joinToString(",\n") { it.toString() }
+		} else ""
+		val outboundProxyEntry = if (isWireGuardEndpoint) {
+			""
+		} else {
+			listOf(serializedConfigData, auxiliaryOutbounds).filter { it.isNotBlank() }
+                .joinToString(",\n", postfix = ",\n\t")
+		}
 		val config = when (platform) {
 			"android" -> {
 				"""
@@ -87,8 +122,8 @@ object ConfigTemplate {
 				|      "endpoint_independent_nat": true
 				|    }
 				|  ],
-				|  "outbounds": [
-				|    ${serializedConfigData},
+				|  ${endpointsSection}"outbounds": [
+				|    ${outboundProxyEntry}
 				|    {
 				|      "type": "direct",
 				|      "tag": "direct"
@@ -174,8 +209,8 @@ object ConfigTemplate {
 				|      "endpoint_independent_nat": true
 				|    }
 				|  ],
-				|  "outbounds": [
-				|    ${serializedConfigData},
+				|  ${endpointsSection}"outbounds": [
+				|    ${outboundProxyEntry}
 				|    {
 				|      "type": "direct",
 				|      "tag": "direct"
@@ -261,8 +296,8 @@ object ConfigTemplate {
 				|	  "endpoint_independent_nat": true
 				|	}
 				|  ],
-				|  "outbounds": [
-				|	${serializedConfigData},
+				|  ${endpointsSection}"outbounds": [
+				|	${outboundProxyEntry}
 				|	{
 				|	  "type": "direct",
 				|	  "tag": "direct"

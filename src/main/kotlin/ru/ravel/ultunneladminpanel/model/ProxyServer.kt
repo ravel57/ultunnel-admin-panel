@@ -24,4 +24,13 @@ data class ProxyServer(
 		inverseJoinColumns = [JoinColumn(name = "proxy_id")],
 	)
 	var proxies: MutableList<Proxy>? = null,
+    var login: String? = null,
+    var password: String? = null,
+    var useSubDomain: Boolean? = null,
+    var subdomain: String? = null,
+    var port: Long? = null,
+    var serverIp: String? = null,
+    var certificateFile: String? = null,
+    var privateKeyFile: String? = null,
+
 )

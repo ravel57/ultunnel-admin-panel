@@ -1,6 +1,8 @@
 package ru.ravel.ultunneladminpanel.service
 
 import jakarta.transaction.Transactional
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.stereotype.Service
 import ru.ravel.ultunneladminpanel.dto.BulkProxyError
@@ -25,6 +27,8 @@ class UserService(
 	/* Self reference: bulk actions must run every user in its own transaction, so they have to go through the proxy. */
 	private val self: ObjectProvider<UserService>,
 ) {
+
+	private val logger: Logger = LoggerFactory.getLogger(UserService::class.java)
 
 	fun getAllUsers(): List<User> {
 		return userRepository.findAll().onEach {
@@ -60,58 +64,110 @@ class UserService(
 	}
 
 
+    @Transactional
+    fun deleteProxyFromUser(request: UserProxyTypeHost) {
+        userRepository.lockUser(request.userId) ?: error("User no longer exists")
+        val user = userRepository.findById(request.userId).orElseThrow()
+        val server = proxyServerRepository.findById(request.proxyServerId).orElseThrow()
+        val proxy = server.proxies.orEmpty().firstOrNull { it.type == request.type }
+            ?: error("Protocol is not configured on this server")
+        val selected = user.proxiesConfigs.firstOrNull { config ->
+            config.proxy?.id == proxy.id && (request.userProxyId == null || config.id == request.userProxyId)
+        }
+        // Retry after a successful deletion is harmless, and can clear a remaining remote identity.
+        if (request.type != ru.ravel.ultunneladminpanel.model.ProxyType.SSH) {
+            val outcome = proxyServerService.deleteUserProxiesBatch(request.proxyServerId, request.type, listOf(user))
+            outcome[request.userId]?.getOrThrow() ?: error("Panel did not confirm client deletion")
+            val proxyIds = server.proxies.orEmpty().mapNotNull { it.id }.toSet()
+            val ids = user.proxiesConfigs.filter { it.proxy?.id in proxyIds && it.type == request.type.configType }
+                .mapNotNull { it.id }.toSet()
+            proxyServerService.deleteConfirmedConfigIds(proxyIds, request.type.configType, ids)
+        } else if (selected != null) {
+            user.proxiesConfigs.remove(selected)
+            userRepository.saveAndFlush(user)
+            configDataRepository.delete(selected)
+        }
+    }
+
+
 	@Transactional
-	fun deleteProxyFromUser(userProxyTypeHost: UserProxyTypeHost) {
+	fun addProxyToUser(userProxyTypeHost: UserProxyTypeHost): ConfigData {
+        userRepository.lockUser(userProxyTypeHost.userId) ?: error("User no longer exists")
 		val user = userRepository.findById(userProxyTypeHost.userId).orElseThrow()
 		val proxyServer = proxyServerRepository.findById(userProxyTypeHost.proxyServerId).orElseThrow()
+		/*
+		 * Fail loudly instead of returning null: an empty 200 reaches the UI as a config card
+		 * with nothing in it, which looks like the protocol was added while nothing was ever
+		 * asked of the proxy panel.
+		 */
 		val proxy = proxyServer.proxies
-			?.firstOrNull { it.type == userProxyTypeHost.type }
-			?: throw NoSuchElementException(
-				"Proxy ${userProxyTypeHost.type} is not configured on server ${userProxyTypeHost.proxyServerId}"
-			)
-
-		val proxyId = proxy.id
-			?: throw IllegalStateException("Proxy ${userProxyTypeHost.type} has no id")
-		val config = user.proxiesConfigs.firstOrNull { config ->
-			config.proxy?.id == proxyId &&
-				(userProxyTypeHost.userProxyId == null || config.id == userProxyTypeHost.userProxyId)
-		}
-			?: throw NoSuchElementException(
-				"User ${userProxyTypeHost.userId} does not have proxy ${userProxyTypeHost.type} on server ${userProxyTypeHost.proxyServerId}"
-			)
-
-		user.proxiesConfigs.remove(config)
-		userRepository.saveAndFlush(user)
-		configDataRepository.delete(config)
-	}
-
-
-	@Transactional
-	fun addProxyToUser(userProxyTypeHost: UserProxyTypeHost): ConfigData? {
-		val user = userRepository.findById(userProxyTypeHost.userId).orElseThrow()
-		val proxyServer = proxyServerRepository.findById(userProxyTypeHost.proxyServerId).orElseThrow()
-		val configData = proxyServer
-			?.proxies
 			?.find { it.type == userProxyTypeHost.type }
-			?.let { proxy ->
-				val configData = proxyServerService.createUserProxy(proxyServer.host!!, proxy, user)
-				configData.serverName = proxyServer.name
-				configDataRepository.save(configData)
-				user.proxiesConfigs.add(configData)
-				userRepository.save(user)
-				return@let configData
-			}
+			?: throw NoSuchElementException(
+				"Server ${proxyServer.id} (${proxyServer.host}) has no ${userProxyTypeHost.type} proxy; " +
+					"it has ${proxyServer.proxies.orEmpty().map { it.type }}"
+			)
+
+		val configData = try {
+			proxyServerService.createUserProxy(proxyServer.host!!, proxy, user)
+		} catch (e: Exception) {
+			logger.error(
+				"failed to add {} to user {} on server {} ({}): {}",
+				userProxyTypeHost.type, user.name, proxyServer.id, proxyServer.host, e.message, e,
+			)
+			throw e
+		}
+
+		configData.serverName = proxyServer.name
+		configDataRepository.save(configData)
+		user.proxiesConfigs.add(configData)
+		userRepository.save(user)
 		return configData
 	}
 
 
 	/* Adds the protocol to every user. Users who already have it are skipped, one failed user does not stop the rest. */
-	fun addProxyToAllUsers(request: ProxyBulkRequest): BulkProxyResult {
-		val proxyId = requireProxyId(request)
-		return forEachUser { user ->
-			self.getObject().addProxyToUserIfAbsent(user.id!!, proxyId, request)
-		}
-	}
+    fun addProxyToAllUsers(request: ProxyBulkRequest): BulkProxyResult {
+        val proxyId = requireProxyId(request)
+        if (request.type == ru.ravel.ultunneladminpanel.model.ProxyType.SSH) {
+            return forEachUser { user -> self.getObject().addProxyToUserIfAbsent(user.id!!, proxyId, request) }
+        }
+        val users = userRepository.findAll().filterNotNull().filter { it.id != null }
+        val pending = users.filter { user -> user.proxiesConfigs.none { it.proxy?.id == proxyId } }
+        var skipped = users.size - pending.size
+        var affected = 0
+        val errors = mutableListOf<BulkProxyError>()
+        val remote = try {
+            proxyServerService.createUserProxiesBatch(request.proxyServerId, proxyId, pending)
+        } catch (error: Exception) {
+            pending.associate { it.id!! to Result.failure<ConfigData>(error) }
+        }
+        pending.forEach { user ->
+            try {
+                val config = remote[user.id]?.getOrThrow() ?: error("Missing batch result")
+                if (self.getObject().saveBatchProxyConfig(user.id!!, proxyId, request.proxyServerId, config)) affected++
+                else skipped++
+            } catch (error: Exception) {
+                errors.add(BulkProxyError(user.id, user.name, error.message ?: "Bulk addition failed"))
+            }
+        }
+        return BulkProxyResult(total = users.size, affected = affected, skipped = skipped,
+            failed = errors.size, configsRemoved = affected, errors = errors)
+    }
+
+    @Transactional
+    fun saveBatchProxyConfig(userId: Long, proxyId: Long, serverId: Long, config: ConfigData): Boolean {
+        userRepository.lockUser(userId) ?: error("User no longer exists")
+        val user = userRepository.findById(userId).orElseThrow()
+        if (user.proxiesConfigs.any { it.proxy?.id == proxyId }) return false
+        val server = proxyServerRepository.findById(serverId).orElseThrow()
+        config.proxy = server.proxies.orEmpty().firstOrNull { it.id == proxyId }
+            ?: error("Protocol no longer exists on the server")
+        config.serverName = server.name
+        configDataRepository.save(config)
+        user.proxiesConfigs.add(config)
+        userRepository.save(user)
+        return true
+    }
 
 
 	/*
@@ -121,8 +177,52 @@ class UserService(
 	 * the same server, would stay in the database. So the scope is every proxy of
 	 * the server, restricted to configs of this protocol's config type.
 	 */
+    fun deleteProxyFromAllUsers(request: ProxyBulkRequest): BulkProxyResult {
+        if (request.type == ru.ravel.ultunneladminpanel.model.ProxyType.SSH) {
+            return self.getObject().deleteLocalProxyFromAllUsers(request)
+        }
+        val proxyIds = requireServerProxyIds(request)
+        val users = userRepository.findAll().filterNotNull().filter { it.id != null }
+        val configs = configDataRepository.findAllByProxy_IdInAndType(proxyIds, request.type.configType)
+        val snapshotIds = configs.mapNotNull { it.id }.toSet()
+        val byUser = users.associate { user -> user.id!! to user.proxiesConfigs
+            .mapNotNull { it.id }.filter { it in snapshotIds }.toSet() }
+        val remote = try {
+            proxyServerService.deleteUserProxiesBatch(request.proxyServerId, request.type, users)
+        } catch (error: Exception) {
+            users.associate { it.id!! to Result.failure<Boolean>(error) }
+        }
+        val failures = mutableMapOf<Long, BulkProxyError>()
+        val confirmed = mutableListOf<User>()
+        val affected = mutableSetOf<Long>()
+        users.forEach { user ->
+            try {
+                val changed = remote[user.id]?.getOrThrow() ?: error("Missing batch deletion result")
+                if (changed) affected.add(user.id!!)
+                confirmed.add(user)
+            } catch (error: Exception) {
+                failures[user.id!!] = BulkProxyError(user.id, user.name, error.message ?: "Panel deletion failed")
+            }
+        }
+        var removed = 0
+        confirmed.filter { byUser[it.id].orEmpty().isNotEmpty() }.chunked(200).forEach { batch ->
+            val ids = batch.flatMap { byUser[it.id].orEmpty() }.toSet()
+            try {
+                removed += proxyServerService.deleteConfirmedConfigIds(proxyIds, request.type.configType, ids)
+                batch.forEach { affected.add(it.id!!) }
+            } catch (error: Exception) {
+                batch.forEach { user -> failures[user.id!!] = BulkProxyError(user.id, user.name,
+                    error.message ?: "Failed to save local deletion; retry the bulk action") }
+            }
+        }
+        affected.removeAll(failures.keys)
+        return BulkProxyResult(total = users.size, affected = affected.size,
+            skipped = users.size - affected.size - failures.size, failed = failures.size,
+            configsRemoved = removed, errors = failures.values.toList())
+    }
+
 	@Transactional
-	fun deleteProxyFromAllUsers(request: ProxyBulkRequest): BulkProxyResult {
+	fun deleteLocalProxyFromAllUsers(request: ProxyBulkRequest): BulkProxyResult {
 		val serverProxyIds = requireServerProxyIds(request)
 		val configType = request.type.configType
 
@@ -159,14 +259,12 @@ class UserService(
 
 	@Transactional
 	fun addProxyToUserIfAbsent(userId: Long, proxyId: Long, request: ProxyBulkRequest): Boolean {
+        userRepository.lockUser(userId) ?: error("User no longer exists")
 		val user = userRepository.findById(userId).orElseThrow()
 		if (user.proxiesConfigs.any { it.proxy?.id == proxyId }) {
 			return false
 		}
 		addProxyToUser(UserProxyTypeHost(userId, request.type, request.proxyServerId))
-			?: throw NoSuchElementException(
-				"Proxy ${request.type} is not configured on server ${request.proxyServerId}"
-			)
 		return true
 	}
 

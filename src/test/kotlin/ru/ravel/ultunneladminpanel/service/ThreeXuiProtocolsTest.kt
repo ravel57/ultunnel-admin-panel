@@ -120,6 +120,10 @@ class ThreeXuiProtocolsTest {
 			localAddress = AmneziaWgConfigBuilder.allowedIps(client),
 			privateKey = "clientPrivate",
 			peerPublicKey = "serverPublic",
+			preSharedKey = "psk",
+			jc = 4,
+			jmin = 50,
+			jmax = 1000,
 			clientConfig = text,
 		).apply {
 			proxy = Proxy(serverIp = "1.2.3.4", type = ProxyType.AMNEZIA_WG)
@@ -131,12 +135,28 @@ class ThreeXuiProtocolsTest {
 		assertTrue(link.startsWith("vpn://"), "unexpected link: $link")
 		assertEquals(text, String(Base64.getUrlDecoder().decode(link.removePrefix("vpn://"))))
 
+		/*
+		 * WireGuard (plain or AmneziaWG) is a sing-box *endpoint* since 1.11.0, not an outbound
+		 * (removed in 1.13.0): "type" is the plain "wireguard" every endpoint uses, the tunnel
+		 * address is "address" (not "local_address"), and the peer moves into a "peers" array
+		 * instead of top-level "peer_public_key"/"server"/"server_port".
+		 */
 		val outbound = objectMapper.readTree(ConfigTemplate.serializeConfig(configData, ignoreUrl = true, platform = "desktop"))
-		assertEquals("amnezia_wireguard", outbound.path("type").asText())
+		assertEquals("wireguard", outbound.path("type").asText())
+		assertEquals("proxy", outbound.path("tag").asText())
 		assertEquals("clientPrivate", outbound.path("private_key").asText())
-		assertEquals("serverPublic", outbound.path("peer_public_key").asText())
-		assertEquals("10.8.0.2/32", outbound.path("local_address").first().asText())
-		assertTrue(outbound.path("peers").isMissingNode, "a null peers array must not reach the client config")
+		assertEquals("10.8.0.2/32", outbound.path("address").first().asText())
+		assertTrue(outbound.path("peer_public_key").isMissingNode, "the legacy top-level peer fields must not reach the client config")
+		assertTrue(outbound.path("local_address").isMissingNode, "the legacy outbound field name must not reach the client config")
+		assertEquals(4, outbound.path("jc").asInt())
+		assertEquals(50, outbound.path("jmin").asInt())
+		assertEquals(1000, outbound.path("jmax").asInt())
+
+		val peer = outbound.path("peers").first()
+		assertEquals("1.2.3.4", peer.path("address").asText())
+		assertEquals(51820, peer.path("port").asInt())
+		assertEquals("serverPublic", peer.path("public_key").asText())
+		assertEquals("psk", peer.path("pre_shared_key").asText())
 	}
 
 	@Test

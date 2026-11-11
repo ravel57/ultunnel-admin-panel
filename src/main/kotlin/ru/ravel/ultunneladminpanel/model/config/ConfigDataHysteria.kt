@@ -69,6 +69,12 @@ data class ConfigDataHysteria(
 	@JsonIgnore
 	var obfsPassword: String? = null,
 
+    @JsonIgnore
+    var obfsMinPacketSize: Int? = null,
+
+    @JsonIgnore
+    var obfsMaxPacketSize: Int? = null,
+
 	/* UDP port hopping range of the inbound ("2000-3000,5000"), null when it is off. */
 	@JsonIgnore
 	var portHopping: String? = null,
@@ -90,10 +96,15 @@ data class ConfigDataHysteria(
 	@JsonProperty("obfs")
 	fun obfs(): Map<String, Any?>? {
 		val password = obfsPassword?.takeIf { it.isNotBlank() } ?: return null
-		return mapOf(
-			"type" to (obfsType?.takeIf { it.isNotBlank() } ?: "salamander"),
-			"password" to password,
-		)
+        return linkedMapOf<String, Any?>(
+            "type" to (obfsType?.takeIf { it.isNotBlank() } ?: "salamander"),
+            "password" to password,
+        ).apply {
+            if (obfsType == "gecko") {
+                obfsMinPacketSize?.let { put("min_packet_size", it) }
+                obfsMaxPacketSize?.let { put("max_packet_size", it) }
+            }
+        }
 	}
 
 	override fun fillFields(): ConfigDataHysteria {
@@ -115,6 +126,10 @@ data class ConfigDataHysteria(
 				append("&obfs=${obfsType?.takeIf { type -> type.isNotBlank() } ?: "salamander"}")
 				append("&obfs-password=${URLEncoder.encode(it, UTF_8.name())}")
 			}
+            if (obfsType == "gecko") {
+                obfsMinPacketSize?.let { append("&minPacketSize=$it") }
+                obfsMaxPacketSize?.let { append("&maxPacketSize=$it") }
+            }
 			portHopping?.takeIf { it.isNotBlank() }?.let { append("&mport=$it") }
 		}
 		return this

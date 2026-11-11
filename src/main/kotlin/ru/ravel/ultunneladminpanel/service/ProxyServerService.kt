@@ -16,8 +16,11 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.megoru.impl.WgEasyAPI
 import org.megoru.io.UnsuccessfulHttpException
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import ru.ravel.ultunneladminpanel.component.createUnsafeOkHttpClient
+import ru.ravel.ultunneladminpanel.component.readBodyOrEmpty
 import ru.ravel.ultunneladminpanel.model.Proxy
 import ru.ravel.ultunneladminpanel.model.ProxyServer
 import ru.ravel.ultunneladminpanel.model.ProxyType.*
@@ -45,6 +48,8 @@ class ProxyServerService(
 	private val configDataRepository: ConfigDataRepository,
 	private val entityManager: EntityManager,
 ) {
+
+	private val logger: Logger = LoggerFactory.getLogger(ProxyServerService::class.java)
 
 	private data class ThreeXuiV3Session(
 		val cookie: String,
@@ -78,8 +83,8 @@ class ProxyServerService(
 			.get()
 			.build()
 
-		val csrfToken = client.newCall(csrfRequest).execute().use { response ->
-			val responseBody = response.body?.string().orEmpty()
+		fun csrfToken(): String = client.newCall(csrfRequest).execute().use { response ->
+			val responseBody = response.readBodyOrEmpty()
 			check(response.isSuccessful) {
 				"3x-ui CSRF request failed: HTTP ${response.code}: $responseBody"
 			}
@@ -95,6 +100,9 @@ class ProxyServerService(
 			}
 		}
 
+		/* /login is behind the CSRF filter too, so it needs the anonymous token. */
+		val loginCsrfToken = csrfToken()
+
 		val loginJson = objectMapper.createObjectNode()
 			.put("username", proxy.login)
 			.put("password", proxy.password)
@@ -103,13 +111,13 @@ class ProxyServerService(
 		val loginRequest = Request.Builder()
 			.header("Content-Type", "application/json")
 			.header("Cookie", cookieHeader(cookies))
-			.header("X-CSRF-Token", csrfToken)
+			.header("X-CSRF-Token", loginCsrfToken)
 			.url("$baseUrl/login")
 			.post(loginBody)
 			.build()
 
 		client.newCall(loginRequest).execute().use { response ->
-			val responseBody = response.body?.string().orEmpty()
+			val responseBody = response.readBodyOrEmpty()
 			check(response.isSuccessful) {
 				"3x-ui login failed: HTTP ${response.code}: $responseBody"
 			}
@@ -122,9 +130,13 @@ class ProxyServerService(
 			}
 		}
 
+		/* The login wipes the session, CSRF token included: mint one that belongs to it.
+		   Minted before the cookie header is built, since this call refreshes the session. */
+		val sessionCsrfToken = csrfToken()
+
 		return ThreeXuiV3Session(
 			cookie = cookieHeader(cookies),
-			csrfToken = csrfToken,
+			csrfToken = sessionCsrfToken,
 		)
 	}
 
@@ -165,28 +177,111 @@ class ProxyServerService(
 		return proxyServerRepository.findAll()
 	}
 
-	fun addNewServer(proxyServer: ProxyServer): ProxyServer {
-		proxyServer.proxies?.forEach {
-			proxyRepository.save(it)
-		}
-		proxyServerRepository.save(proxyServer)
-		return proxyServer
-	}
+    @Transactional
+    fun addNewServer(proxyServer: ProxyServer): ProxyServer {
+        require(proxyServer.id == null && proxyServer.proxies.isNullOrEmpty()) { "Add protocols after creating the server" }
+        validateServerConnection(proxyServer)
+        proxyServer.proxies = mutableListOf()
+        return proxyServerRepository.save(proxyServer)
+    }
 
+    @Transactional
+    fun editServer(request: ProxyServer): ProxyServer {
+        val id = requireNotNull(request.id)
+        proxyServerRepository.lockServer(id) ?: error("Server not found")
+        val server = proxyServerRepository.findById(id).orElseThrow()
+        server.name = request.name
+        server.host = request.host
+        server.login = request.login
+        if (!request.password.isNullOrBlank()) server.password = request.password
+        server.useSubDomain = request.useSubDomain
+        server.subdomain = request.subdomain
+        server.port = request.port
+        server.serverIp = request.serverIp
+        server.certificateFile = request.certificateFile
+        server.privateKeyFile = request.privateKeyFile
+        validateServerConnection(server)
+        return proxyServerRepository.save(server)
+    }
 
-	fun editServer(proxyServer: ProxyServer): ProxyServer {
-		return proxyServerRepository.save(proxyServer)
-	}
+    private fun validateServerConnection(server: ProxyServer) {
+        server.name = server.name?.trim(); server.host = server.host?.trim()
+        server.login = server.login?.trim(); server.subdomain = server.subdomain?.trim()
+        server.serverIp = server.serverIp?.trim()?.takeIf { it.isNotEmpty() }
+        server.certificateFile = server.certificateFile?.trim()?.takeIf { it.isNotEmpty() }
+        server.privateKeyFile = server.privateKeyFile?.trim()?.takeIf { it.isNotEmpty() }
+        require((server.certificateFile == null) == (server.privateKeyFile == null)) {
+            "Укажите оба пути: к сертификату и закрытому ключу"
+        }
+        require(listOfNotNull(server.certificateFile, server.privateKeyFile).all { it.startsWith("/") }) {
+            "Пути к сертификату и ключу должны быть абсолютными путями на сервере"
+        }
+        require(!server.name.isNullOrBlank() && !server.host.isNullOrBlank()) { "Server name and host are required" }
+        require(!server.host!!.contains("://") && !server.host!!.contains('/')) { "Host must not contain a scheme or path" }
+        require(!server.login.isNullOrBlank() && !server.password.isNullOrBlank()) { "Panel login and password are required" }
+        if (server.useSubDomain == true) require(!server.subdomain.isNullOrBlank()) { "Panel subdomain is required" }
+        else require(server.port != null && server.port!! in 1L..65535L) { "Panel port must be between 1 and 65535" }
+    }
 
+    private fun connectionProxy(server: ProxyServer, proxy: Proxy): Proxy = proxy.copy(
+        login = server.login, password = server.password, useSubDomain = server.useSubDomain,
+        subdomain = server.subdomain, port = server.port, serverIp = server.serverIp)
 
-	fun addProxyToServer(proxyServerId: Long, proxy: Proxy): Proxy {
-		val proxyServer = proxyServerRepository.findById(proxyServerId).orElseThrow().also {
-			proxyRepository.save(proxy)
-		}
-		proxyServer?.proxies?.add(proxy)
-		proxyServer?.let { proxyServerRepository.save(it) }
-		return proxy
-	}
+    @Transactional
+    fun migrateServerConnections() {
+        proxyServerRepository.findAll().forEach { server ->
+            if (server.login.isNullOrBlank()) {
+                val candidates = server.proxies.orEmpty().filter { it.type != SSH && !it.login.isNullOrBlank() }
+                val source = candidates.firstOrNull { it.type !in setOf(NAIVE, WIREGUARD) } ?: candidates.firstOrNull()
+                if (source != null) {
+                    server.login = source.login; server.password = source.password
+                    server.useSubDomain = source.useSubDomain; server.subdomain = source.subdomain
+                    server.port = source.port; server.serverIp = source.serverIp
+                    proxyServerRepository.save(server)
+                }
+            }
+        }
+    }
+
+    @Transactional
+    fun addProxyToServer(proxyServerId: Long, request: Proxy): Proxy {
+        proxyServerRepository.lockServer(proxyServerId) ?: error("Server not found")
+        val server = proxyServerRepository.findById(proxyServerId).orElseThrow()
+        val type = requireNotNull(request.type) { "Protocol type is required" }
+        if (server.proxies.orEmpty().any { it.type == type || it.type?.configType == type.configType }) {
+            throw org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,
+                "This protocol already exists on this server")
+        }
+        val proxy = if (type == SSH) {
+            require(!request.login.isNullOrBlank() && !request.password.isNullOrBlank()) { "SSH credentials are required" }
+            require(request.port != null && request.port!! in 1L..65535L) { "SSH port is invalid" }
+            Proxy(type = SSH, login = request.login, password = request.password,
+                port = request.port, proxyPort = request.proxyPort ?: request.port, serverIp = request.serverIp)
+        } else {
+            validateServerConnection(server)
+            val mapper = ObjectMapper()
+            val session = loginThreeXui(server.host!!, connectionProxy(server, Proxy(type = type)), mapper)
+            val protocol = when (type) { HYSTERIA2 -> "hysteria"; AMNEZIA_WG -> "amneziawg"; else -> type.configType }
+            val body = mapper.createObjectNode().put("protocol", protocol)
+                .put("serverName", java.net.URI(session.baseUrl).host)
+                .put("certificateFile", server.certificateFile)
+                .put("privateKeyFile", server.privateKeyFile)
+            val create = Request.Builder().url("${session.baseUrl}/panel/api/inbounds/provision")
+                .header("Cookie", session.cookie).header("X-CSRF-Token", session.csrfToken)
+                .post(mapper.writeValueAsBytes(body).toRequestBody("application/json".toMediaType())).build()
+            val inbound = readJsonResponse(session.client, create, mapper, "provision inbound").path("obj")
+            require(inbound.path("enable").asBoolean(true)) { "Managed inbound is disabled in the panel" }
+            val inboundId = inbound.path("id").asLong()
+            val port = inbound.path("port").asLong()
+            require(inboundId > 0 && port in 1L..65535L) { "Panel returned an invalid inbound" }
+            Proxy(type = type, inboundId = inboundId, proxyPort = port)
+        }
+        proxyRepository.save(proxy)
+        if (server.proxies == null) server.proxies = mutableListOf()
+        server.proxies!!.add(proxy)
+        proxyServerRepository.save(server)
+        return proxy
+    }
 
 
 	@Transactional
@@ -324,10 +419,17 @@ class ProxyServerService(
 	}
 
 
+	/**
+	 * [client] is the one the login ran on, and it owns that login's cookies. Every later
+	 * call of the session has to go through it: OkHttp replaces a Cookie header the caller
+	 * set with whatever the client's own jar returns, so a call made on another client can
+	 * leave with another panel's session and come back 404.
+	 */
 	private data class ThreeXuiSession(
 		val baseUrl: String,
 		val cookie: String,
 		val csrfToken: String,
+		val client: OkHttpClient,
 	)
 
 	private fun threeXuiBaseUrl(host: String, proxy: Proxy): String {
@@ -363,14 +465,22 @@ class ProxyServerService(
 	}
 
 	private fun readJsonResponse(
+		client: OkHttpClient,
 		request: Request,
 		objectMapper: ObjectMapper,
 		operation: String,
 	): JsonNode {
-		return createUnsafeOkHttpClient().newCall(request).execute().use { response ->
-			val responseBody = response.body?.string().orEmpty()
+		return client.newCall(request).execute().use { response ->
+			val responseBody = response.readBodyOrEmpty()
 			if (!response.isSuccessful) {
-				error("3x-ui $operation failed: HTTP ${response.code}: $responseBody")
+				val detail = responseBody.ifBlank { "empty body" }
+				if (response.code == 403) {
+					error(
+						"3x-ui $operation failed: HTTP 403: $detail. " +
+							"The panel rejects an unsafe request whose CSRF token does not belong to the logged-in session."
+					)
+				}
+				error("3x-ui $operation failed: HTTP ${response.code}: $detail")
 			}
 
 			val root = objectMapper.readTree(responseBody)
@@ -385,50 +495,45 @@ class ProxyServerService(
 	}
 
 	private class ThreeXuiCookieJar : CookieJar {
-		private val cookies = mutableListOf<Cookie>()
+		private val storedCookies = mutableListOf<Cookie>()
 
 		@Synchronized
-		override fun saveFromResponse(url: HttpUrl, newCookies: List<Cookie>) {
-			newCookies.forEach { newCookie ->
-				cookies.removeAll {
+		override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+			cookies.forEach { newCookie ->
+				storedCookies.removeAll {
 					it.name == newCookie.name &&
 						it.domain == newCookie.domain &&
 						it.path == newCookie.path
 				}
-				cookies += newCookie
+				storedCookies += newCookie
 			}
 		}
 
 		@Synchronized
 		override fun loadForRequest(url: HttpUrl): List<Cookie> {
 			val now = System.currentTimeMillis()
-			cookies.removeAll { it.expiresAt < now }
-			return cookies.filter { it.matches(url) }
+			storedCookies.removeAll { it.expiresAt < now }
+			return storedCookies.filter { it.matches(url) }
 		}
 
 		@Synchronized
-		fun cookieHeader(): String = cookies
+		fun cookieHeader(): String = storedCookies
 			.filter { it.expiresAt >= System.currentTimeMillis() }
 			.joinToString("; ") { "${it.name}=${it.value}" }
 	}
 
-	private fun loginThreeXui(host: String, proxy: Proxy, objectMapper: ObjectMapper): ThreeXuiSession {
-		val baseUrl = threeXuiBaseUrl(host, proxy)
-		val cookieJar = ThreeXuiCookieJar()
-		val client = createUnsafeOkHttpClient()
-			.newBuilder()
-			.cookieJar(cookieJar)
-			.build()
-
-		// Keep one OkHttpClient for the whole browser-session flow. This is important:
-		// Set-Cookie can be returned by an intermediate redirect, not only the final response.
-		val csrfRequest = Request.Builder()
+	private fun fetchThreeXuiCsrfToken(
+		client: OkHttpClient,
+		baseUrl: String,
+		objectMapper: ObjectMapper,
+	): String {
+		val request = Request.Builder()
 			.url("$baseUrl/csrf-token")
 			.get()
 			.build()
 
-		val csrfToken = client.newCall(csrfRequest).execute().use { response ->
-			val responseBody = response.body?.string().orEmpty()
+		return client.newCall(request).execute().use { response ->
+			val responseBody = response.readBodyOrEmpty()
 			if (!response.isSuccessful) {
 				error("3x-ui csrf-token failed: HTTP ${response.code}: $responseBody")
 			}
@@ -442,6 +547,23 @@ class ProxyServerService(
 			root.path("obj").asText().takeIf { it.isNotBlank() }
 				?: error("3x-ui csrf-token is empty")
 		}
+	}
+
+	private fun loginThreeXui(host: String, proxy: Proxy, objectMapper: ObjectMapper): ThreeXuiSession {
+		val baseUrl = threeXuiBaseUrl(host, proxy)
+		// The address is built out of the proxy row, so a protocol pointed at the wrong
+		// subdomain or port is otherwise invisible: the call just fails somewhere else.
+		logger.info("3x-ui: logging in to {} as {} (proxy {} {})", baseUrl, proxy.login, proxy.id, proxy.type)
+		val cookieJar = ThreeXuiCookieJar()
+		val client = createUnsafeOkHttpClient()
+			.newBuilder()
+			.cookieJar(cookieJar)
+			.build()
+
+		// Keep one OkHttpClient for the whole browser-session flow. This is important:
+		// Set-Cookie can be returned by an intermediate redirect, not only the final response.
+		// /login is itself behind the CSRF filter, so it needs this anonymous token.
+		val loginCsrfToken = fetchThreeXuiCsrfToken(client, baseUrl, objectMapper)
 
 		val loginJson = objectMapper.createObjectNode().apply {
 			put("username", proxy.login)
@@ -452,12 +574,12 @@ class ProxyServerService(
 		val loginRequest = Request.Builder()
 			.url("$baseUrl/login")
 			.header("Content-Type", "application/json")
-			.header("X-CSRF-Token", csrfToken)
+			.header("X-CSRF-Token", loginCsrfToken)
 			.post(loginBody)
 			.build()
 
 		client.newCall(loginRequest).execute().use { response ->
-			val responseBody = response.body?.string().orEmpty()
+			val responseBody = response.readBodyOrEmpty()
 			if (!response.isSuccessful) {
 				error("3x-ui login failed: HTTP ${response.code}: $responseBody")
 			}
@@ -477,10 +599,19 @@ class ProxyServerService(
 			)
 		}
 
+		/*
+		 * The panel wipes the session on login — the CSRF token above all, so that a token
+		 * minted before the credentials went in cannot outlive the privilege change. The
+		 * pre-login token is therefore already dead here, and every POST carrying it is
+		 * answered with an empty 403. Mint a new one on the logged-in session.
+		 */
+		val csrfToken = fetchThreeXuiCsrfToken(client, baseUrl, objectMapper)
+
 		return ThreeXuiSession(
 			baseUrl = baseUrl,
-			cookie = authenticatedCookie,
+			cookie = cookieJar.cookieHeader().ifBlank { authenticatedCookie },
 			csrfToken = csrfToken,
+			client = client,
 		)
 	}
 
@@ -495,7 +626,7 @@ class ProxyServerService(
 			.get()
 			.build()
 
-		val root = readJsonResponse(request, objectMapper, "list inbounds")
+		val root = readJsonResponse(session.client, request, objectMapper, "list inbounds")
 		val inbounds = root.path("obj")
 		if (!inbounds.isArray) error("3x-ui list inbounds returned invalid obj")
 
@@ -516,7 +647,7 @@ class ProxyServerService(
 			.get()
 			.build()
 
-		val root = readJsonResponse(request, objectMapper, "list inbounds")
+		val root = readJsonResponse(session.client, request, objectMapper, "list inbounds")
 		val inbounds = root.path("obj")
 		if (!inbounds.isArray) error("3x-ui list inbounds returned invalid obj")
 
@@ -545,7 +676,17 @@ class ProxyServerService(
 			?.let { port -> matching.filter { it.path("port").asLong() == port } }
 			?.takeIf { it.isNotEmpty() }
 
-		return (byPort ?: matching).last()
+		return (byPort ?: matching).last().also {
+			logger.info(
+				"3x-ui: {} inbound {} (port {}, remark '{}') of {} on {}",
+				protocol,
+				it.path("id").asLong(),
+				it.path("port").asLong(),
+				it.path("remark").asText(""),
+				matching.size,
+				session.baseUrl,
+			)
+		}
 	}
 
 	/**
@@ -565,7 +706,7 @@ class ProxyServerService(
 			.get()
 			.build()
 
-		val root = readJsonResponse(request, objectMapper, "get inbound")
+		val root = readJsonResponse(session.client, request, objectMapper, "get inbound")
 		return root.path("obj") as? ObjectNode
 			?: error("3x-ui get inbound $inboundId returned invalid obj")
 	}
@@ -587,7 +728,7 @@ class ProxyServerService(
 			.get()
 			.build()
 
-		val root = readJsonResponse(request, objectMapper, "list clients")
+		val root = readJsonResponse(session.client, request, objectMapper, "list clients")
 		return root.path("obj")
 			.firstOrNull { it.path("email").asText() == email }
 	}
@@ -607,8 +748,10 @@ class ProxyServerService(
 		val existing = findThreeXuiClientRecord(session, email, objectMapper)
 		if (existing == null) {
 			addThreeXuiClient(session, inboundId, client, objectMapper)
+			logger.info("3x-ui: created client {} on inbound {} of {}", email, inboundId, session.baseUrl)
 			return
 		}
+		logger.info("3x-ui: client {} already exists, attaching it to inbound {} of {}", email, inboundId, session.baseUrl)
 
 		val payload = objectMapper.createObjectNode().apply {
 			putArray("inboundIds").add(inboundId)
@@ -624,7 +767,7 @@ class ProxyServerService(
 			.post(body)
 			.build()
 
-		readJsonResponse(request, objectMapper, "attach client")
+		readJsonResponse(session.client, request, objectMapper, "attach client")
 	}
 
 	/**
@@ -652,6 +795,19 @@ class ProxyServerService(
 	 * Hysteria2 obfuscation of an inbound as (type, password), or null when it is off.
 	 * The panel stores it as a "salamander" UDP mask under streamSettings.finalmask.
 	 */
+    private fun hysteriaGeckoRange(stream: ObjectNode): Pair<Int, Int>? {
+        val mask = stream.path("finalmask").path("udp")
+            .firstOrNull { it.path("type").asText() == "salamander" } ?: return null
+        val raw = mask.path("settings").path("packetSize").asText("").trim()
+        if (raw.isEmpty()) return null
+        val parts = raw.split("-")
+        val minimum = parts.firstOrNull()?.trim()?.toIntOrNull()
+        val maximum = if (parts.size == 1) minimum else parts.getOrNull(1)?.trim()?.toIntOrNull()
+        require(parts.size <= 2 && minimum != null && maximum != null &&
+            minimum in 1..65535 && maximum in minimum..65535) { "Invalid Gecko packetSize: $raw" }
+        return minimum to maximum
+    }
+
 	private fun hysteriaObfs(stream: ObjectNode): Pair<String, String>? {
 		val finalmask = stream.path("finalmask")
 		val masks = finalmask.path("udp")
@@ -721,441 +877,279 @@ class ProxyServerService(
 			.post(body)
 			.build()
 
-		readJsonResponse(request, objectMapper, "add client")
+		readJsonResponse(session.client, request, objectMapper, "add client")
 	}
 
 	private fun randomThreeXuiSubId(): String {
 		return UUID.randomUUID().toString().replace("-", "").take(16)
 	}
 
-	@Transactional
-	fun createUserProxy(host: String, proxy: Proxy, user: User): ConfigData {
-		val objectMapper = ObjectMapper()
-		when (proxy.type!!) {
-			VLESS -> {
-				val protocol = "vless"
-				val session = loginThreeXui(host, proxy, objectMapper)
-				val inbound = getThreeXuiInbound(session, protocol, objectMapper)
-				val inboundId = inbound.path("id").asLong()
-				val port = inbound.path("port").asLong()
-				if (inboundId <= 0L) error("3x-ui VLESS inbound has invalid id")
-				if (port <= 0L) error("3x-ui VLESS inbound has invalid port")
+    @Transactional
+    fun createUserProxy(host: String, proxy: Proxy, user: User): ConfigData {
+        if (proxy.type == SSH) {
+            return ConfigDataSsh(server = host, serverPort = proxy.proxyPort ?: proxy.port!!,
+                password = sshService.addNewUser(proxy, host, user), user = user.name!!).apply { this.proxy = proxy }
+        }
+        val server = proxyServerRepository.findByHost(host) ?: error("Server not found")
+        validateServerConnection(server)
+        val connection = connectionProxy(server, proxy)
+        val mapper = ObjectMapper()
+        if (proxy.type == AMNEZIA_WG) return createAmneziaClient(host, connection, user, mapper).apply { this.proxy = proxy }
+        val protocol = when (proxy.type) { HYSTERIA2 -> "hysteria"; TROJAN2 -> "trojan"; else -> proxy.type!!.configType }
+        val session = loginThreeXui(host, connection, mapper)
+        val inbound = if (proxy.inboundId != null) getThreeXuiInboundById(session, proxy.inboundId!!, mapper)
+            else selectThreeXuiInbound(session, protocol, proxy.proxyPort, mapper)
+        require(inbound.path("protocol").asText() == protocol) { "Configured inbound protocol has changed" }
+        require(inbound.path("enable").asBoolean(true)) { "Inbound is disabled" }
+        val inboundId = inbound.path("id").asLong()
+        val port = inbound.path("port").asInt()
+        require(inboundId > 0 && port in 1..65535) { "Invalid inbound" }
+        val email = "${user.name}-${proxy.type!!.configType}"
+        val candidate = mapper.createObjectNode().apply {
+            put("email", email); put("id", UUID.randomUUID().toString())
+            put("password", UUID.randomUUID().toString()); put("auth", UUID.randomUUID().toString())
+            put("subId", randomThreeXuiSubId()); put("enable", true)
+            put("limitIp", 0); put("totalGB", 0); put("expiryTime", 0); put("tgId", 0)
+            put("reset", 0); put("comment", "")
+        }
+        upsertThreeXuiClient(session, inboundId, email, candidate, mapper)
+        val settings = getThreeXuiInboundSettings(session, inboundId, mapper)
+        val identity = findThreeXuiClientRecord(session, email, mapper)
+        return buildStoredProxyConfig(server, proxy, user, inbound, settings, identity)
+    }
 
-				val stream = objectField(inbound.get("streamSettings"), objectMapper)
-					?: objectMapper.createObjectNode()
-				val tlsSettings = objectField(stream.get("tlsSettings"), objectMapper)
-				val xhttpSettings = objectField(stream.get("xhttpSettings"), objectMapper)
+    private fun clientEmail(user: User, proxy: Proxy): String =
+        "${user.name}-${if (proxy.type == AMNEZIA_WG) "amneziawg" else proxy.type!!.configType}"
 
-				val sni = tlsSettings?.path("serverName")?.asText()?.takeIf { it.isNotBlank() }
-				val alpn = tlsSettings?.path("alpn")
-					?.takeIf { it.isArray }
-					?.map { it.asText() }
-					?.filter { it.isNotBlank() }
-					?.takeIf { it.isNotEmpty() }
-					?: listOf("h2")
+    private fun buildStoredProxyConfig(server: ProxyServer, proxy: Proxy, user: User,
+                                      inbound: JsonNode, settings: ObjectNode, identity: JsonNode?): ConfigData {
+        val mapper = ObjectMapper()
+        if (proxy.type == AMNEZIA_WG) return buildAmneziaConfig(server.host!!, connectionProxy(server, proxy),
+            user, inbound, settings, mapper).apply { this.proxy = proxy }
+        val email = clientEmail(user, proxy)
+        val saved = findThreeXuiSettingsClient(settings, email) ?: error("Panel returned no attached client $email")
+        fun credential(key: String): String? = saved.path(key).asText("").takeIf { it.isNotBlank() }
+            ?: identity?.path(key)?.asText("")?.takeIf { it.isNotBlank() }
+        val endpoint = server.serverIp?.takeIf { it.isNotBlank() } ?: server.host!!
+        val protocol = when (proxy.type) { HYSTERIA2 -> "hysteria2"; TROJAN2 -> "trojan"; else -> proxy.type!!.configType }
+        val port = inbound.path("port").asInt()
+        val stream = objectField(inbound.get("streamSettings"), mapper) ?: mapper.createObjectNode()
+        val result = if (proxy.type == WIREGUARD) {
+            NativeProxyConfigBuilder.wireguard(endpoint, port, settings, saved, mapper)
+        } else {
+            NativeProxyConfigBuilder.build(protocol, endpoint, port, email,
+                credential(if (protocol == "hysteria2") "auth" else "password") ?: "",
+                credential("id") ?: credential("uuid"), settings, stream, mapper)
+        }
+        return result.apply { this.proxy = proxy }
+    }
 
-				val uuid = UUID.randomUUID().toString()
-				val client = objectMapper.createObjectNode().apply {
-					put("email", "${user.name}-vless")
-					put("id", uuid)
-					put("subId", randomThreeXuiSubId())
-					put("limitIp", 0)
-					put("totalGB", 0)
-					put("expiryTime", 0)
-					put("tgId", 0)
-					put("comment", "")
-					put("enable", true)
-				}
-				addThreeXuiClient(session, inboundId, client, objectMapper)
+    // Only batch requests go to the panel; local rendering never creates or attaches clients.
+    fun createUserProxiesBatch(serverId: Long, proxyId: Long, users: List<User>): Map<Long, Result<ConfigData>> {
+        if (users.isEmpty()) return emptyMap()
+        val server = proxyServerRepository.findById(serverId).orElseThrow()
+        val proxy = server.proxies.orEmpty().firstOrNull { it.id == proxyId } ?: error("Protocol no longer exists")
+        require(proxy.type != SSH) { "SSH does not support panel batches" }
+        validateServerConnection(server)
+        val mapper = ObjectMapper()
+        val session = loginThreeXui(server.host!!, connectionProxy(server, proxy), mapper)
+        val protocol = when (proxy.type) { HYSTERIA2 -> "hysteria"; AMNEZIA_WG -> "amneziawg"; TROJAN2 -> "trojan"; else -> proxy.type!!.configType }
+        val inbound = proxy.inboundId?.let { getThreeXuiInboundById(session, it, mapper) }
+            ?: selectThreeXuiInbound(session, protocol, proxy.proxyPort, mapper)
+        val inboundId = inbound.path("id").asLong()
+        require(inboundId > 0 && inbound.path("enable").asBoolean(true) && inbound.path("protocol").asText() == protocol) {
+            "Configured inbound is disabled or its protocol has changed"
+        }
+        val batchClient = session.client.newBuilder().callTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS).build()
+        fun post(path: String, body: JsonNode): JsonNode {
+            val request = Request.Builder().url("${session.baseUrl}/panel/api/clients/$path")
+                .header("Cookie", session.cookie).header("X-CSRF-Token", session.csrfToken)
+                .post(mapper.writeValueAsBytes(body).toRequestBody("application/json".toMediaType())).build()
+            return readJsonResponse(batchClient, request, mapper, path).path("obj")
+        }
+        fun listClients(): Map<String, JsonNode> {
+            val request = Request.Builder().url("${session.baseUrl}/panel/api/clients/list")
+                .header("Cookie", session.cookie).get().build()
+            val records = readJsonResponse(batchClient, request, mapper, "list clients").path("obj")
+            require(records.isArray) { "Panel returned an invalid client list" }
+            return records.associateBy { it.path("email").asText() }
+        }
+        val failures = mutableMapOf<String, String>()
+        var identities = listClients()
+        users.filter { clientEmail(it, proxy) !in identities }.chunked(200).forEach { chunk ->
+            val payload = mapper.createArrayNode()
+            chunk.forEach { user ->
+                val client = mapper.createObjectNode().apply {
+                    put("email", clientEmail(user, proxy)); put("id", UUID.randomUUID().toString())
+                    put("password", UUID.randomUUID().toString()); put("auth", UUID.randomUUID().toString())
+                    put("subId", randomThreeXuiSubId()); put("enable", true)
+                    put("limitIp", 0); put("totalGB", 0); put("expiryTime", 0); put("tgId", 0)
+                    put("reset", 0); put("comment", "")
+                }
+                payload.add(mapper.createObjectNode().apply {
+                    set<ObjectNode>("client", client)
+                    putArray("inboundIds").add(inboundId)
+                })
+            }
+            try {
+                val result = post("bulkCreate", payload)
+                result.path("skipped").forEach { report -> failures[report.path("email").asText()] = report.path("reason").asText() }
+            } catch (error: Exception) {
+                chunk.forEach { failures[clientEmail(it, proxy)] = error.message ?: "Batch creation failed" }
+            }
+        }
+        // A timed-out request may still have committed; read canonical credentials before attaching.
+        identities = listClients()
+        val afterCreate = getThreeXuiInboundSettings(session.copy(client = batchClient), inboundId, mapper)
+        val alreadyAttached = afterCreate.path("clients").map { it.path("email").asText() }.toSet()
+        users.filter { clientEmail(it, proxy) in identities && clientEmail(it, proxy) !in alreadyAttached }
+            .chunked(200).forEach { chunk ->
+            val payload = mapper.createObjectNode().apply {
+                val emails = putArray("emails")
+                chunk.forEach { emails.add(clientEmail(it, proxy)) }
+                putArray("inboundIds").add(inboundId)
+            }
+            try {
+                val result = post("bulkAttach", payload)
+                val errors = result.path("errors").map { it.asText() }.joinToString("; ")
+                if (errors.isNotBlank()) chunk.forEach { failures[clientEmail(it, proxy)] = errors }
+            } catch (error: Exception) {
+                chunk.forEach { failures[clientEmail(it, proxy)] = error.message ?: "Batch attachment failed" }
+            }
+        }
+        val finalInbound = getThreeXuiInboundById(session.copy(client = batchClient), inboundId, mapper)
+        val settings = objectField(finalInbound.get("settings"), mapper) ?: error("Panel returned no inbound settings")
+        val attached = settings.path("clients").map { it.path("email").asText() }.toSet()
+        return users.associate { user ->
+            val email = clientEmail(user, proxy)
+            user.id!! to runCatching {
+                check(email in attached) { failures[email] ?: "Panel did not attach client $email" }
+                buildStoredProxyConfig(server, proxy, user, finalInbound, settings, identities[email])
+            }
+        }
+    }
 
-				val server = if (proxy.useSubDomain == true) {
-					"${proxy.subdomain}.${host}"
-				} else {
-					host
-				}
+    // Fully remove the selected client identities, including traffic and every inbound membership.
+    fun deleteUserProxiesBatch(serverId: Long, type: ru.ravel.ultunneladminpanel.model.ProxyType,
+                               users: List<User>): Map<Long, Result<Boolean>> {
+        if (users.isEmpty()) return emptyMap()
+        require(type != SSH) { "SSH is managed independently" }
+        val server = proxyServerRepository.findById(serverId).orElseThrow()
+        val proxies = server.proxies.orEmpty().filter { it.type?.configType == type.configType }
+        require(proxies.isNotEmpty()) { "Protocol no longer exists on this server" }
+        validateServerConnection(server)
+        val mapper = ObjectMapper()
+        val login = loginThreeXui(server.host!!, connectionProxy(server, proxies.first()), mapper)
+        val session = login.copy(client = login.client.newBuilder()
+            .callTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS).build())
+        val protocol = when (type) { HYSTERIA2 -> "hysteria"; AMNEZIA_WG -> "amneziawg"; TROJAN2 -> "trojan"; else -> type.configType }
+        val inbounds = listThreeXuiInbounds(session, mapper)
+        val targets = linkedSetOf<Long>()
+        proxies.forEach { proxy ->
+            val selected = if (proxy.inboundId != null) inbounds.filter { it.path("id").asLong() == proxy.inboundId }
+                else if (proxy.proxyPort != null) inbounds.filter { it.path("protocol").asText() == protocol && it.path("port").asLong() == proxy.proxyPort }
+                else inbounds.filter { it.path("protocol").asText() == protocol }.takeLast(1)
+            require(selected.all { it.path("protocol").asText() == protocol }) { "Configured inbound protocol has changed" }
+            selected.forEach { targets.add(it.path("id").asLong()) }
+        }
+        fun records(): Map<String, JsonNode> {
+            val request = Request.Builder().url("${session.baseUrl}/panel/api/clients/list")
+                .header("Cookie", session.cookie).get().build()
+            val result = readJsonResponse(session.client, request, mapper, "list clients").path("obj")
+            require(result.isArray) { "Panel returned an invalid client list" }
+            return result.associateBy { it.path("email").asText() }
+        }
+        val before = records()
+        val views = before.values.toList() + inbounds.filter { it.path("id").asLong() in targets }.flatMap { inbound ->
+            objectField(inbound.get("settings"), mapper)?.path("clients")?.toList().orEmpty()
+        }
+        val serverProxyIds = server.proxies.orEmpty().mapNotNull { it.id }.toSet()
+        // Stored credentials also find legacy clients whose admin username has since changed.
+        val emailsByUser = users.associate { user ->
+            val names = linkedSetOf(clientEmail(user, Proxy(type = type)))
+            user.proxiesConfigs.filter { it.proxy?.id in serverProxyIds && it.type == type.configType }.forEach { config ->
+                val outbound = mapper.readTree(ConfigTemplate.serializeConfig(config, true, "desktop"))
+                val uuid = outbound.path("uuid").asText("")
+                val privateKey = outbound.path("private_key").asText("")
+                val password = if (config is ConfigDataNativeProxy && type == SHADOWTLS) {
+                    mapper.readTree(config.auxiliaryOutboundsJson).firstOrNull { it.path("type").asText() == "shadowtls" }
+                        ?.path("password")?.asText("").orEmpty()
+                } else outbound.path("password").asText("")
+                val matches = views.filter { record ->
+                    when {
+                        uuid.isNotBlank() -> record.path("id").asText() == uuid || record.path("uuid").asText() == uuid
+                        privateKey.isNotBlank() -> record.path("privateKey").asText() == privateKey
+                        password.isNotBlank() -> record.path("password").asText() == password || record.path("auth").asText() == password
+                        else -> false
+                    }
+                }.map { it.path("email").asText() }.filter { it.isNotBlank() }.distinct()
+                val canonical = clientEmail(user, Proxy(type = type))
+                if (canonical in matches) names.add(canonical)
+                else {
+                    check(matches.size <= 1) { "Cannot unambiguously identify the panel client for ${user.name}" }
+                    names.addAll(matches)
+                }
+            }
+            user.id!! to names.toSet()
+        }
+        val emails = emailsByUser.values.flatten().distinct()
+        val toDelete = emails.filter { it in before }
+        val changed = toDelete.toSet()
+        val failures = mutableMapOf<String, String>()
+        fun deleteBatch(batch: List<String>) {
+            val body = mapper.createObjectNode().apply {
+                val array = putArray("emails"); batch.forEach { array.add(it) }
+                put("keepTraffic", false)
+            }
+            try {
+                val request = Request.Builder().url("${session.baseUrl}/panel/api/clients/bulkDel")
+                    .header("Cookie", session.cookie).header("X-CSRF-Token", session.csrfToken)
+                    .post(mapper.writeValueAsBytes(body).toRequestBody("application/json".toMediaType())).build()
+                val result = readJsonResponse(session.client, request, mapper, "bulkDel").path("obj")
+                result.path("skipped").filter { it.isObject }.forEach { report ->
+                    failures[report.path("email").asText()] = report.path("reason").asText()
+                }
+                val detail = result.path("errors").map { it.asText() }.joinToString("; ")
+                if (detail.isNotBlank()) batch.forEach { failures[it] = detail }
+            } catch (error: Exception) {
+                batch.forEach { failures[it] = error.message ?: "Batch deletion failed" }
+            }
+        }
+        toDelete.chunked(200).forEach(::deleteBatch)
+        // Reconcile the actual state, including requests that committed after an HTTP timeout.
+        val after = records()
+        return users.associate { user ->
+            val names = emailsByUser.getValue(user.id!!)
+            user.id!! to runCatching {
+                names.forEach { email ->
+                    check(after[email] == null) {
+                        failures[email] ?: "Client $email is still present on the panel"
+                    }
+                }
+                names.any { it in changed }
+            }
+        }
+    }
 
-				return ConfigDataVless(
-					type = protocol,
-					uuid = uuid,
-					server = server,
-					serverPort = port,
-					tls = TlsSettings(
-						enabled = true,
-						serverName = sni ?: host,
-						alpn = alpn,
-						utls = UtlsSettings(
-							enabled = true,
-							fingerprint = "chrome"
-						),
-					),
-					transport = TransportSettings(
-						type = "xhttp",
-						host = xhttpSettings?.path("host")?.asText()?.takeIf { it.isNotBlank() }
-							?: (sni ?: host),
-						path = xhttpSettings?.path("path")?.asText()?.takeIf { it.isNotBlank() } ?: "/",
-						mode = xhttpSettings?.path("mode")?.asText()?.takeIf { it.isNotBlank() } ?: "auto",
-					),
-				).apply {
-					this.proxy = proxy
-				}
-			}
+    @Transactional
+    fun deleteConfirmedConfigIds(proxyIds: Set<Long>, configType: String, snapshotIds: Set<Long>): Int {
+        if (snapshotIds.isEmpty()) return 0
+        val ids = configDataRepository.findAllByProxy_IdInAndType(proxyIds, configType)
+            .mapNotNull { it.id }.filter { it in snapshotIds }.toSet()
+        if (ids.isEmpty()) return 0
+        unlinkConfigsFromUsers(ids)
+        deleteConfigChildRows(ids)
+        return configDataRepository.deleteAllByConfigIds(ids)
+    }
 
-			TROJAN -> {
-				val protocol = "trojan"
-				val session = loginThreeXui(host, proxy, objectMapper)
-				val inbound = getThreeXuiInbound(session, protocol, objectMapper)
-				val inboundId = inbound.path("id").asLong()
-				val port = inbound.path("port").asLong()
-				if (inboundId <= 0L) error("3x-ui Trojan inbound has invalid id")
-				if (port <= 0L) error("3x-ui Trojan inbound has invalid port")
+    private fun createAmneziaClient(host: String, proxy: Proxy, user: User, objectMapper: ObjectMapper): ConfigData {
 
-				val stream = objectField(inbound.get("streamSettings"), objectMapper)
-					?: objectMapper.createObjectNode()
-				val tlsSettings = objectField(stream.get("tlsSettings"), objectMapper)
-				val alpn = tlsSettings?.path("alpn")
-					?.takeIf { it.isArray }
-					?.map { it.asText() }
-					?.filter { it.isNotBlank() }
-					?.takeIf { it.isNotEmpty() }
-					?: listOf("h2")
-
-				val password = UUID.randomUUID().toString()
-				val client = objectMapper.createObjectNode().apply {
-					put("email", "${user.name}-trojan")
-					put("password", password)
-					put("subId", randomThreeXuiSubId())
-					put("limitIp", 0)
-					put("totalGB", 0)
-					put("expiryTime", 0)
-					put("tgId", 0)
-					put("comment", "")
-					put("enable", true)
-				}
-				addThreeXuiClient(session, inboundId, client, objectMapper)
-
-				val sniHost = tlsSettings?.path("serverName")?.asText()?.takeIf { it.isNotBlank() }
-					?: if (proxy.useSubDomain == true) {
-						"${proxy.subdomain}.${host}"
-					} else {
-						host
-					}
-
-				return ConfigDataTrojan(
-					trojanServer = host,
-					serverPort = port,
-					password = password,
-					sni = sniHost,
-					fp = "chrome",
-					alpn = alpn,
-				).apply {
-					this.proxy = proxy
-				}
-			}
-
-
-			TROJAN2 -> {
-				val baseUrl = if (proxy.useSubDomain == true) {
-					"https://${proxy.subdomain}.${host}"
-				} else {
-					"https://${host}:${proxy.port}"
-				}
-				val client = createUnsafeOkHttpClient()
-				val session = openThreeXuiV3Session(client, baseUrl, proxy, objectMapper)
-
-				val listRequest = Request.Builder()
-					.header("Accept", "application/json")
-					.header("Cookie", session.cookie)
-					.header("X-CSRF-Token", session.csrfToken)
-					.url("$baseUrl/panel/api/inbounds/list")
-					.get()
-					.build()
-
-				val listRoot = client.newCall(listRequest).execute().use { response ->
-					val responseBody = response.body?.string().orEmpty()
-					check(response.isSuccessful) {
-						"3x-ui inbound list failed: HTTP ${response.code}: $responseBody"
-					}
-					check(responseBody.isNotBlank()) { "3x-ui returned an empty inbound list" }
-
-					val root = objectMapper.readTree(responseBody)
-					check(root.path("success").asBoolean(false)) {
-						root.path("msg").asText("3x-ui failed to return inbounds")
-					}
-					root
-				}
-
-				val protocol = ThreeXuiType.TROJAN.name.lowercase()
-				val inbound = listRoot.path("obj")
-					.elements()
-					.asSequence()
-					.filter { it.path("protocol").asText().equals(protocol, ignoreCase = true) }
-					.lastOrNull()
-					?: error("No Trojan inbound found in 3x-ui")
-
-				val inboundId = inbound.path("id").asInt(-1)
-				val inboundPort = inbound.path("port").asLong(-1)
-				check(inboundId > 0) { "3x-ui returned an invalid Trojan inbound id" }
-				check(inboundPort in 1L..65535L) { "3x-ui returned an invalid Trojan inbound port" }
-
-				val email = "${user.name}-trojan2"
-				val clientsRequest = Request.Builder()
-					.header("Accept", "application/json")
-					.header("Cookie", session.cookie)
-					.header("X-CSRF-Token", session.csrfToken)
-					.url("$baseUrl/panel/api/clients/list")
-					.get()
-					.build()
-				val existingClient = client.newCall(clientsRequest).execute().use { response ->
-					val responseBody = response.body?.string().orEmpty()
-					check(response.isSuccessful) {
-						"3x-ui client list failed: HTTP ${response.code}: $responseBody"
-					}
-					check(responseBody.isNotBlank()) { "3x-ui returned an empty client list" }
-					val root = objectMapper.readTree(responseBody)
-					check(root.path("success").asBoolean(false)) {
-						root.path("msg").asText("3x-ui failed to return clients")
-					}
-					root.path("obj")
-						.elements()
-						.asSequence()
-						.firstOrNull { it.path("email").asText() == email }
-				}
-
-				val password = existingClient?.path("password")?.asText()
-					?.takeIf { it.isNotBlank() }
-					?: UUID.randomUUID().toString().replace("-", "")
-				val subId = existingClient?.path("subId")?.asText()
-					?.takeIf { it.isNotBlank() }
-					?: UUID.randomUUID().toString()
-
-				val requestJson: JsonNode
-				val requestUrl: String
-				if (existingClient == null) {
-					val clientNode = objectMapper.createObjectNode().apply {
-						put("password", password)
-						put("email", email)
-						put("limitIp", 0)
-						put("totalGB", 0L)
-						put("expiryTime", 0L)
-						put("enable", true)
-						put("tgId", 0L)
-						put("subId", subId)
-						put("comment", "")
-						put("reset", 0)
-					}
-					requestJson = objectMapper.createObjectNode().apply {
-						set<ObjectNode>("client", clientNode)
-						set<JsonNode>("inboundIds", objectMapper.createArrayNode().add(inboundId))
-					}
-					requestUrl = "$baseUrl/panel/api/clients/add"
-				} else {
-					// The external client may already exist when the first local DB transaction failed.
-					// Attach is idempotent in 3x-ui and also covers a client that exists globally
-					// but is not yet attached to this inbound.
-					requestJson = objectMapper.createObjectNode().apply {
-						set<JsonNode>("inboundIds", objectMapper.createArrayNode().add(inboundId))
-					}
-					requestUrl = "$baseUrl/panel/api/clients/${URLEncoder.encode(email, UTF_8.name())}/attach"
-				}
-
-				val upsertClientBody = objectMapper.writeValueAsBytes(requestJson)
-					.toRequestBody("application/json".toMediaType())
-				val upsertClientRequest = Request.Builder()
-					.header("Content-Type", "application/json")
-					.header("Accept", "application/json")
-					.header("Cookie", session.cookie)
-					.header("X-CSRF-Token", session.csrfToken)
-					.url(requestUrl)
-					.post(upsertClientBody)
-					.build()
-
-				client.newCall(upsertClientRequest).execute().use { response ->
-					val responseBody = response.body?.string().orEmpty()
-					check(response.isSuccessful) {
-						"3x-ui client upsert failed: HTTP ${response.code}: $responseBody"
-					}
-					check(responseBody.isNotBlank()) { "3x-ui returned an empty client upsert response" }
-					val root = objectMapper.readTree(responseBody)
-					check(root.path("success").asBoolean(false)) {
-						root.path("msg").asText("3x-ui failed to create or attach the Trojan client")
-					}
-				}
-
-				val serverHost = if (proxy.useSubDomain == true) {
-					"${proxy.subdomain}.${host}"
-				} else {
-					host
-				}
-				val streamSettings = decodeJsonNode(objectMapper, inbound.path("streamSettings"))
-				val tlsSettings = streamSettings.path("tlsSettings")
-				val realitySettings = streamSettings.path("realitySettings")
-				val security = streamSettings.path("security").asText()
-				val sni = if (security.equals("reality", ignoreCase = true)) {
-					realitySettings.path("serverNames")
-						.takeIf { it.isArray && it.size() > 0 }
-						?.get(0)
-						?.asText()
-				} else {
-					findText(tlsSettings, "serverName")
-				}
-				val alpnNode = tlsSettings.path("alpn")
-				val alpn = if (alpnNode.isArray && alpnNode.size() > 0) {
-					alpnNode.elements()
-						.asSequence()
-						.map { it.asText() }
-						.filter { it.isNotBlank() }
-						.toList()
-						.ifEmpty { listOf("h2") }
-				} else {
-					listOf("h2")
-				}
-				val fingerprint = findText(streamSettings, "fingerprint") ?: "chrome"
-
-				return ConfigDataTrojan(
-					type = "trojan",
-					trojanServer = serverHost,
-					serverPort = inboundPort,
-					password = password,
-					sni = sni ?: serverHost,
-					fp = fingerprint,
-					alpn = alpn,
-				).apply {
-					this.proxy = proxy
-				}
-			}
-
-			/*
-			 * Hysteria2 is provisioned through 3x-ui itself: the panel runs it as a
-			 * "hysteria" inbound with streamSettings.hysteriaSettings.version = 2, so the
-			 * standalone Hysteria HTTP API is no longer involved.
-			 */
-			HYSTERIA2 -> {
-				val protocol = "hysteria"
-				val session = loginThreeXui(host, proxy, objectMapper)
-				val inbound = selectThreeXuiInbound(session, protocol, proxy.proxyPort, objectMapper)
-				val inboundId = inbound.path("id").asLong()
-				val port = inbound.path("port").asLong()
-				if (inboundId <= 0L) error("3x-ui Hysteria inbound has invalid id")
-				if (port !in 1L..65535L) error("3x-ui Hysteria inbound has invalid port")
-
-				val stream = objectField(inbound.get("streamSettings"), objectMapper)
-					?: objectMapper.createObjectNode()
-				val hysteriaSettings = objectField(stream.get("hysteriaSettings"), objectMapper)
-				val version = hysteriaSettings?.path("version")?.asInt(2) ?: 2
-				if (version == 1) {
-					error("3x-ui inbound $inboundId runs Hysteria v1, and the client config speaks hysteria2 only")
-				}
-
-				val tlsSettings = objectField(stream.get("tlsSettings"), objectMapper)
-				val sni = tlsSettings?.path("serverName")?.asText()?.takeIf { it.isNotBlank() }
-				val alpn = tlsSettings?.path("alpn")
-					?.takeIf { it.isArray }
-					?.map { it.asText() }
-					?.filter { it.isNotBlank() }
-					?.takeIf { it.isNotEmpty() }
-					?: listOf("h3")
-				val obfs = hysteriaObfs(stream)
-
-				val email = "${user.name}-hysteria2"
-				val client = objectMapper.createObjectNode().apply {
-					put("email", email)
-					/* The panel generates one when this is blank; passing it keeps the created
-					   credential in hand instead of depending on reading it back. */
-					put("auth", UUID.randomUUID().toString().replace("-", ""))
-					put("subId", randomThreeXuiSubId())
-					put("limitIp", 0)
-					put("totalGB", 0)
-					put("expiryTime", 0)
-					put("tgId", 0)
-					put("comment", "")
-					put("reset", 0)
-					put("enable", true)
-				}
-				upsertThreeXuiClient(session, inboundId, email, client, objectMapper)
-
-				/*
-				 * Read the auth back: an attached client keeps the one it already had, and an
-				 * identity created for another protocol only gets one while being attached —
-				 * that one reaches the inbound's settings before the clients table.
-				 */
-				val auth = findThreeXuiClientRecord(session, email, objectMapper)
-					?.path("auth")
-					?.asText()
-					?.takeIf { it.isNotBlank() }
-					?: findThreeXuiSettingsClient(getThreeXuiInboundSettings(session, inboundId, objectMapper), email)
-						?.path("auth")
-						?.asText()
-						?.takeIf { it.isNotBlank() }
-					?: error("3x-ui returned no Hysteria auth for client $email")
-
-				val hysteriaHost = if (proxy.useSubDomain == true) {
-					"${proxy.subdomain}.${host}"
-				} else {
-					host
-				}
-
-				return ConfigDataHysteria(
-					password = auth,
-					server = hysteriaHost,
-					serverPort = port,
-					sni = sni ?: hysteriaHost,
-					alpnList = alpn.joinToString(","),
-					insecure = true,
-					obfsType = obfs?.first,
-					obfsPassword = obfs?.second,
-					portHopping = hysteriaHopPorts(stream),
-				).apply {
-					this.proxy = proxy
-				}
-			}
-
-			SSH -> {
-				val password = sshService.addNewUser(proxy, host, user)
-				return ConfigDataSsh(
-					server = host,
-					serverPort = proxy.proxyPort!!,
-					password = password,
-					user = user.name!!,
-				).apply {
-					this.proxy = proxy
-				}
-			}
-
-			WIREGUARD -> {
-				val url = if (proxy.useSubDomain!!) {
-					"https://${proxy.subdomain}.${host}"
-				} else {
-					"https://${host}:${proxy.port}"
-				}
-				val api = WgEasyAPI.Builder()
-					.password(proxy.password)
-					.host(url)
-					.build()
-				try {
-					if (api.clients.none { it.name == user.name }) {
-						api.createClient(user.name)
-					}
-					api.getConfig(api.getClientByName(user.name)!!.id, "vpn")
-				} catch (e: UnsuccessfulHttpException) {
-					println(e.message)
-				}
-				val file = File("vpn.conf")
-				val config = file.readText().trim()
-				file.delete()
-				return WireguardConfigParser.parseConfig(config, host).apply {
-					this.proxy = proxy
-				}
-			}
-
-			/*
-			 * AmneziaWG is provisioned through 3x-ui as well ("amneziawg" inbound, native
-			 * since 3x-ui v3). The keypair and the tunnel address are left to the panel: it
-			 * owns the inbound's subnet and knows which addresses are already taken.
-			 */
-			AMNEZIA_WG -> {
 				val protocol = "amneziawg"
 				val session = loginThreeXui(host, proxy, objectMapper)
-				val inbound = selectThreeXuiInbound(session, protocol, proxy.proxyPort, objectMapper)
+				val inbound = proxy.inboundId?.let { getThreeXuiInboundById(session, it, objectMapper) }
+                    ?: selectThreeXuiInbound(session, protocol, proxy.proxyPort, objectMapper)
 				val inboundId = inbound.path("id").asLong()
 				val port = inbound.path("port").asLong()
 				if (inboundId <= 0L) error("3x-ui AmneziaWG inbound has invalid id")
@@ -1178,6 +1172,15 @@ class ProxyServerService(
 				/* The tunnel fields live in the inbound's settings JSON, not in the clients
 				   table: one identity attached to two tunnels has two different addresses. */
 				val settings = getThreeXuiInboundSettings(session, inboundId, objectMapper)
+        return buildAmneziaConfig(host, proxy, user, inbound, settings, objectMapper)
+    }
+
+    private fun buildAmneziaConfig(host: String, proxy: Proxy, user: User, inbound: JsonNode,
+                                  settings: ObjectNode, objectMapper: ObjectMapper): ConfigData {
+        val inboundId = inbound.path("id").asLong()
+        val port = inbound.path("port").asLong()
+        val email = clientEmail(user, proxy)
+
 				val serverSettings = objectField(settings.get("server"), objectMapper)
 					?: error("3x-ui AmneziaWG inbound $inboundId has no server block")
 				val clientSettings = findThreeXuiSettingsClient(settings, email)
@@ -1185,10 +1188,7 @@ class ProxyServerService(
 
 				/* A tunnel endpoint is dialled over UDP, so the panel's subdomain is only
 				   usable when it resolves to the server itself. */
-				val endpoint = when {
-					proxy.useSubDomain == true -> "${proxy.subdomain}.${host}"
-					else -> proxy.serverIp ?: host
-				}
+                val endpoint = proxy.serverIp?.takeIf { it.isNotBlank() } ?: host
 				val remark = listOfNotNull(
 					inbound.path("remark").asText("").takeIf { it.isNotBlank() },
 					user.name,
@@ -1205,6 +1205,36 @@ class ProxyServerService(
 						serverSettings.path("mtu").asInt(0),
 						serverSettings.path("s4").asInt(0),
 					),
+					/*
+					 * These mirror AmneziaWgConfigBuilder.build() field for field: the client
+					 * only completes the handshake when it repeats the server's obfuscation
+					 * parameters exactly, so nothing here is left to a sing-box-side default.
+					 */
+					jc = serverSettings.path("jc").asInt(0),
+					jmin = serverSettings.path("jmin").asInt(0),
+					jmax = serverSettings.path("jmax").asInt(0),
+					s1 = serverSettings.path("s1").asInt(0),
+					s2 = serverSettings.path("s2").asInt(0),
+					s3 = serverSettings.path("s3").asInt(0).takeIf { it > 0 },
+					s4 = serverSettings.path("s4").asInt(0).takeIf { it > 0 },
+					h1 = serverSettings.path("h1").asText("").takeIf { it.isNotBlank() },
+					h2 = serverSettings.path("h2").asText("").takeIf { it.isNotBlank() },
+					h3 = serverSettings.path("h3").asText("").takeIf { it.isNotBlank() },
+					h4 = serverSettings.path("h4").asText("").takeIf { it.isNotBlank() },
+					i1 = serverSettings.path("i1").asText("").takeIf { it.isNotBlank() },
+					i2 = serverSettings.path("i2").asText("").takeIf { it.isNotBlank() },
+					i3 = serverSettings.path("i3").asText("").takeIf { it.isNotBlank() },
+					i4 = serverSettings.path("i4").asText("").takeIf { it.isNotBlank() },
+					i5 = serverSettings.path("i5").asText("").takeIf { it.isNotBlank() },
+					headerProtectionKey = serverSettings.path("headerProtectionKey").asText("").takeIf { it.isNotBlank() },
+					contentPaddingAddition = serverSettings.path("contentPaddingAddition").asText("").takeIf { it.isNotBlank() },
+					rekeyAfterTime = serverSettings.path("rekeyAfterTime").asText("").takeIf { it.isNotBlank() },
+					rekeyTimeout = serverSettings.path("rekeyTimeout").asText("").takeIf { it.isNotBlank() },
+					rejectAfterTime = serverSettings.path("rejectAfterTime").asText("").takeIf { it.isNotBlank() },
+					keepaliveTimeout = serverSettings.path("keepaliveTimeout").asText("").takeIf { it.isNotBlank() },
+					maxHandshakeAttempts = serverSettings.path("maxHandshakeAttempts").asText("").takeIf { it.isNotBlank() },
+					randomTrailers = serverSettings.path("randomTrailers").asBoolean(false).takeIf { it },
+					disableCookies = serverSettings.path("disableCookies").asBoolean(false).takeIf { it },
 					dns = AmneziaWgConfigBuilder.dnsServers(serverSettings)
 						.joinToString(",")
 						.takeIf { it.isNotBlank() },
@@ -1218,116 +1248,24 @@ class ProxyServerService(
 				).apply {
 					this.proxy = proxy
 				}
-			}
 
-			NAIVE -> {
-				val loginBody: RequestBody = FormBody.Builder()
-					.add("user", proxy.login!!)
-					.add("pass", proxy.password!!)
-					.build()
-				val url = if (proxy.useSubDomain!!) {
-					"https://${proxy.subdomain}.${host}"
-				} else {
-					"https://${host}:${proxy.port}"
-				}
-				var request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/api/login")
-					.post(loginBody)
-					.build()
-				var response = createUnsafeOkHttpClient().newCall(request).execute()
-				val cooke = response.headers["Set-Cookie"]
-				request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/api/inbounds")
-					.header("Cookie", cooke.toString())
-					.get()
-					.build()
-				response = createUnsafeOkHttpClient().newCall(request).execute()
-				var string = response.body?.string()
-				val readValueInbounds = objectMapper.readValue(string, ObjectNode::class.java)
-				val count = readValueInbounds.get("obj").get("inbounds").size()
-				var inbound: SuiInbound? = null
-				for (i in 0 until count) {
-					request = Request.Builder()
-						.header("Content-Type", "application/json")
-						.url("${url}/api/inbounds?id=${i + 1}")
-						.header("Cookie", cooke.toString())
-						.get()
-						.build()
-					response = createUnsafeOkHttpClient().newCall(request).execute()
-					val string = response.body?.string()
-					val readValueInbounds = objectMapper.readValue(string, SuiInboundsResponse::class.java)
-					val first = readValueInbounds.obj?.inbounds?.first()
-					if (first?.type?.equals("naive", ignoreCase = true) == true) {
-						inbound = first
-						break
-					}
-				}
-				val port = inbound?.listen_port?.toLong()
-				val id = inbound?.id
-				val sniOrIp = if (proxy.serverIp != null) {
-					proxy.serverIp
-				} else {
-					inbound?.addrs?.first()?.server!!
-				}
-				val sni = inbound?.addrs?.first()?.server!!
-				val password = UserService.generateSecretKey()
-
-				fun enc(s: String): String = URLEncoder.encode(s, UTF_8.name())
-
-				val json = """{
-				  "enable": true,
-				  "name": "${user.name}",
-				  "config": {
-					"naive": {
-					  "username": "${user.name}",
-					  "password": "$password"
-					}
-				  },
-				  "inbounds": ${listOf(id).joinToString(prefix = "[", postfix = "]")},
-				  "links": [],
-				  "volume": 0,
-				  "expiry": 0,
-				  "up": 0,
-				  "down": 0,
-				  "desc": "",
-				  "group": ""
-				}"""
-				val newUserBody = FormBody.Builder()
-					.add("object", "clients")
-					.add("action", "new")
-					.addEncoded("data", enc(json))
-					.build()
-				request = Request.Builder()
-					.header("Content-Type", "application/json")
-					.url("${url}/api/save")
-					.header("Cookie", cooke.toString())
-					.post(newUserBody)
-					.build()
-				createUnsafeOkHttpClient().newCall(request).execute()
-				return ConfigDataNaive(
-					server = sniOrIp,
-					serverPort = port!!,
-					username = user.name!!,
-					password = password,
-					tls = TlsSettings(
-						enabled = true,
-						serverName = sni,
-					),
-				).apply {
-					this.proxy = proxy
-				}
-			}
-		}
-	}
-
-
-	fun getProxyServer(secretKey: String): List<ConfigData> {
-		return userRepository.findBySecretKey(secretKey)
-			?.proxiesConfigs
-			?.map { it.fillFields() }
-			?: emptyList()
-	}
-
+    }
+    fun getProxyServer(secretKey: String): List<ConfigData> {
+        val configs = userRepository.findBySecretKey(secretKey)?.proxiesConfigs ?: return emptyList()
+        val tunnels = configs.filter { it is ConfigDataAmneziaWireguard || it is ConfigDataWireguard }
+        if (tunnels.isNotEmpty()) {
+            val endpoints = proxyServerRepository.findAll().flatMap { server ->
+                val address = server.serverIp?.takeIf { it.isNotBlank() } ?: server.host
+                server.proxies.orEmpty().mapNotNull { proxy -> proxy.id?.let { it to address } }
+            }.toMap()
+            tunnels.forEach { config ->
+                val address = endpoints[config.proxy?.id]?.takeIf { it.isNotBlank() }
+                    ?: config.server?.takeIf { it.isNotBlank() }
+                    ?: config.proxy?.serverIp?.takeIf { it.isNotBlank() }
+                    ?: error("WireGuard/AmneziaWG server address is missing")
+                config.server = address
+            }
+        }
+        return configs.map { it.fillFields() }
+    }
 }
