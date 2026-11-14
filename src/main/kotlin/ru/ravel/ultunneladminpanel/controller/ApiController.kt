@@ -102,6 +102,14 @@ class ApiController(
 	}
 
 
+	@PostMapping("/regenerate-secret-key/{userId}")
+	fun regenerateSecretKey(
+		@PathVariable userId: Long,
+	): ResponseEntity<Any> {
+		return ResponseEntity.ok().body(userService.regenerateSecretKey(userId))
+	}
+
+
 	@PostMapping("/add-proxy-to-user")
 	fun addProxyToUser(
 		@RequestBody userProxyTypeHost: UserProxyTypeHost,

@@ -56,6 +56,19 @@ class UserService(
 	}
 
 
+	/**
+	 * Rotates the key a user authenticates with. It is the same key the client
+	 * application uses for the configuration download and for control.ultunnel.ru,
+	 * so rotating it logs every device of that user out of both at once.
+	 */
+	@Transactional
+	fun regenerateSecretKey(userId: Long): User {
+		val user = userRepository.findById(userId).orElseThrow()
+		user.secretKey = generateSecretKey()
+		return userRepository.save(user)
+	}
+
+
 	@Transactional
 	fun setUserEnabled(userId: Long, isEnabled: Boolean): User {
 		val user = userRepository.findById(userId).orElseThrow()

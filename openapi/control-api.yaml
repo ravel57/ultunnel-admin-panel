@@ -1,0 +1,1188 @@
+openapi: 3.0.3
+
+info:
+  title: ultunnel control API
+  version: "1.0.0"
+  description: |
+    API эндпоинта **control.ultunnel.ru**: клиентское приложение присылает сюда
+    посещённые домены и забирает обратно готовую раздельную маршрутизацию.
+
+    Спецификация покрывает только `ControlApiController` (`/control/api/v1/**`).
+    Админский API (`/api/v1/**`) сюда не входит и с хоста control.ultunnel.ru
+    вообще не отвечает.
+
+    ## Авторизация
+
+    Сессии нет. Каждый запрос несёт secret key пользователя, который выдаёт
+    админка: заголовок `X-Secret-Key`. Принимается также
+    `Authorization: Bearer <key>` и — для клиентов, которые умеют только собрать
+    URL, — параметр `?secretKey=`; последним лучше не пользоваться, ключ в query
+    попадает в логи прокси.
+
+    ## Общий список правил и опция «Только мои домены»
+
+    По умолчанию маршрутизация, которую отдаёт API, собрана из правил **всех**
+    подписчиков: включённые правила складываются в общий пул, и новый
+    пользователь сразу получает список, который до него уже кто-то разметил.
+
+    Опция **«Только мои домены»** живёт в клиентском приложении и передаётся
+    параметром `onlyMine=true` — тогда в ответ идут правила одного этого
+    пользователя. Параметр принимают все методы; на сервере он не хранится,
+    поэтому клиент обязан слать его в каждом запросе, иначе получит пул.
+
+    Как разрешается конфликт:
+
+    * собственное правило пользователя всегда главнее пула — если подошло хоть
+      одно своё, пул по этому домену не смотрят вовсе;
+    * внутри пула для одного и того же шаблона берётся режим, который выбрало
+      больше всего людей, при равенстве — тот, что меняли последним;
+    * в `/routing/singbox` свои правила идут раньше пуловых, и sing-box, беря
+      первое подошедшее, воспроизводит ту же очерёдность.
+
+    **История посещений не общая.** `GET /visits` всегда возвращает домены
+    только того пользователя, чей ключ предъявлен, независимо от `onlyMine`:
+    один подписчик не должен узнать, какие сайты открывает другой. Общими
+    становятся лишь правила, которые люди осознанно включили.
+
+    ## Что нужно клиенту на iOS
+
+    Минимальный цикл — три метода:
+
+    1. `POST /visits` — отдавать накопленные имена пачкой, например раз в минуту.
+       Дубли внутри пачки схлопываются на сервере, можно не дедуплицировать.
+    2. `GET /routing/version` — дёшево опрашивать (раз в 30–60 секунд или при
+       возврате приложения из фона).
+    3. `GET /routing/singbox` — забирать полный набор правил, **только когда
+       `rulesVersion` вырос**. `rulesVersion` учитывает и чужие правки, если
+       клиент работает с общим пулом, поэтому опрашивать версию нужно с тем же
+       `onlyMine`, с каким потом забираются правила. Ответ — готовый фрагмент секции `route`: массив
+       `rules` подставляется **перед** собственным правилом «всё из tun в
+       туннель», `final` кладётся в `route.final`. Теги `proxy`, `direct` и
+       `block` — те же, что в конфигурации, которую отдаёт
+       `/api/v1/get-users-proxy-servers-singbox`.
+
+    Остальные методы нужны, если приложение показывает свой экран управления
+    маршрутизацией вместо веб-интерфейса.
+
+    ## Нормализация имён
+
+    Сервер приводит имя к канону сам: отбрасывает схему, userinfo, порт, путь и
+    завершающую точку, опускает регистр, переводит IDN в punycode. Голые
+    IP-адреса и всё, что не похоже на доменное имя, отбрасывается и попадает в
+    счётчик `rejected`. Клиенту достаточно прислать то, что он видит.
+
+servers:
+  - url: https://control.ultunnel.ru/control/api/v1
+    description: Production
+  - url: http://localhost:8081/control/api/v1
+    description: Локальная разработка
+
+security:
+  - secretKey: []
+
+tags:
+  - name: client
+    description: То, что нужно клиентскому приложению
+  - name: domains
+    description: Собранные домены
+  - name: rules
+    description: Правила маршрутизации
+  - name: settings
+    description: Настройки и состояние
+
+paths:
+
+  /visits:
+    post:
+      tags: [client, domains]
+      operationId: reportVisits
+      summary: Отправить посещённые домены
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      description: |
+        Принимает пачку имён. Можно слать только имена (`domains`), только
+        подробные записи (`entries`) или и то и другое — они объединяются.
+
+        Дубли внутри пачки складываются в одну запись: `hits` суммируются,
+        адреса накапливаются (не больше 12 на домен, новые впереди).
+
+        Если пользователь выключил сбор, запрос всё равно успешен, но в ответе
+        `stored: false` — данные приняты и отброшены.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VisitReportRequest'
+            examples:
+              onlyNames:
+                summary: Только имена
+                value:
+                  deviceId: "iphone-15"
+                  domains: ["ya.ru", "github.com", "https://youtube.com/watch?v=1"]
+              withDetails:
+                summary: С адресами и счётчиками
+                value:
+                  deviceId: "iphone-15"
+                  entries:
+                    - domain: "ya.ru"
+                      address: "5.255.255.242"
+                      hits: 3
+                    - domain: "r1---sn-x.googlevideo.com"
+                      address: "142.250.74.78"
+                      hits: 311
+                      at: "2026-11-14T12:09:06Z"
+                    - domain: "github.com"
+      responses:
+        '200':
+          description: Отчёт принят
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisitReportResponse'
+              example:
+                accepted: 3
+                rejected: 0
+                stored: true
+                rulesVersion: 7
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+    get:
+      tags: [domains]
+      operationId: listVisits
+      summary: Список собранных доменов
+      description: |
+        Возвращает **только домены этого пользователя** — чужую историю через
+        этот метод получить нельзя ни при каких параметрах.
+
+        Режим у каждого домена — действующий: собственное правило, иначе правило
+        из общего пула, иначе режим по умолчанию. Откуда он взялся, видно в
+        `ruleSource`.
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+        - name: find
+          in: query
+          description: Подстрока имени, без учёта регистра.
+          required: false
+          schema:
+            type: string
+          example: "google"
+        - name: mode
+          in: query
+          description: |
+            Оставить только домены с этим действующим режимом.
+            `all` или отсутствие параметра — без фильтра.
+          required: false
+          schema:
+            type: string
+            enum: [all, PROXY, DIRECT, BLOCK]
+        - name: ruled
+          in: query
+          description: |
+            `true` — только те, под которые подошло правило; `false` — только те,
+            что идут по умолчанию; не передан — все.
+          required: false
+          schema:
+            type: boolean
+        - name: limit
+          in: query
+          description: Размер страницы. Значения вне 1…1000 подрезаются.
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 200
+            minimum: 1
+            maximum: 1000
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 0
+            minimum: 0
+      responses:
+        '200':
+          description: Страница результатов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisitedDomainPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    delete:
+      tags: [domains]
+      operationId: forgetVisits
+      summary: Убрать домены из истории
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      description: |
+        Удаляет только собранную историю, правила не трогает.
+
+        Тело необязательно: запрос без тела равнозначен `{"all": true}`.
+
+        > На iOS тело у `DELETE` придётся задать вручную
+        > (`URLRequest.httpBody` + `httpMethod = "DELETE"`), `URLSession` это
+        > поддерживает.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgetDomainsRequest'
+            examples:
+              some:
+                summary: Несколько имён
+                value:
+                  domains: ["youtube.com", "doubleclick.net"]
+              everything:
+                summary: Вся история
+                value:
+                  all: true
+      responses:
+        '200':
+          description: Сколько записей удалено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletedCount'
+              example:
+                deleted: 2
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /rules:
+    get:
+      tags: [rules]
+      operationId: listRules
+      summary: Правила пользователя
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      responses:
+        '200':
+          description: Правила и режим по умолчанию
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RulesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [rules]
+      operationId: upsertRules
+      summary: Создать или изменить правила
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      description: |
+        Правило опознаётся парой «шаблон + тип совпадения». Если такое уже есть,
+        оно обновляется, иначе создаётся.
+
+        **`mode: null` удаляет правила** для перечисленных шаблонов — домены
+        возвращаются под режим по умолчанию. Это то, что отправляет положение
+        «по умолчанию» в переключателе.
+
+        Шаблоны нормализуются так же, как имена доменов; для `KEYWORD` — только
+        trim и нижний регистр. Шаблоны, из которых ничего не вышло, молча
+        отбрасываются; если не осталось ни одного — `400`.
+
+        Любое изменение увеличивает `rulesVersion`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertRulesRequest'
+            examples:
+              direct:
+                summary: Домен и поддомены мимо VPN
+                value:
+                  patterns: ["gosuslugi.ru", "nalog.ru"]
+                  mode: "DIRECT"
+                  matchType: "SUFFIX"
+                  comment: "госуслуги мимо VPN"
+              block:
+                summary: Заблокировать по вхождению
+                value:
+                  patterns: ["doubleclick"]
+                  mode: "BLOCK"
+                  matchType: "KEYWORD"
+              reset:
+                summary: Вернуть под режим по умолчанию
+                value:
+                  patterns: ["github.com"]
+                  mode: null
+                  matchType: "SUFFIX"
+      responses:
+        '200':
+          description: Что изменилось
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RulesChangeResponse'
+              example:
+                created: 2
+                updated: 0
+                deleted: 0
+                rulesVersion: 8
+        '400':
+          description: |
+            Ни одного пригодного шаблона, либо упёрлись в потолок правил
+            (`app.control.max-rules-per-user`, по умолчанию 5000).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    delete:
+      tags: [rules]
+      operationId: deleteRules
+      summary: Удалить правила
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      description: |
+        По идентификаторам, по шаблонам или и так и так. Чужие идентификаторы
+        игнорируются — удаляются только правила этого пользователя.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteRulesRequest'
+            examples:
+              byId:
+                value:
+                  ids: [12, 13]
+              byPattern:
+                value:
+                  patterns: ["gosuslugi.ru"]
+      responses:
+        '200':
+          description: Что изменилось
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RulesChangeResponse'
+              example:
+                created: 0
+                updated: 0
+                deleted: 2
+                rulesVersion: 9
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /routing/version:
+    get:
+      tags: [client]
+      operationId: getRoutingVersion
+      summary: Версия правил
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      description: |
+        Самый дешёвый метод: ничего не считает. Полный набор правил имеет смысл
+        забирать, только когда `rulesVersion` стал больше запомненного.
+      responses:
+        '200':
+          description: Текущая версия
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutingVersion'
+              example:
+                rulesVersion: 7
+                rulesUpdatedAt: "2026-11-14T12:09:14.819655Z"
+                defaultMode: "PROXY"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /routing/singbox:
+    get:
+      tags: [client]
+      operationId: getSingBoxRouting
+      summary: Маршрутизация как фрагмент sing-box
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      description: |
+        Правила сгруппированы по типу совпадения и исходу, так что их выходит
+        несколько штук, а не по одной на домен.
+
+        Порядок групп важен и уже выставлен: сначала точные хосты (`domain`),
+        затем суффиксы (`domain_suffix`), затем вхождения (`domain_keyword`).
+        sing-box берёт первое подошедшее правило, поэтому переставлять их нельзя.
+
+        Как встроить:
+
+        ```json
+        {
+          "route": {
+            "rules": [
+              { "inbound": ["tun-in"], "action": "sniff" },
+              { "protocol": ["dns"], "action": "hijack-dns" },
+
+              "<<< сюда весь массив rules из ответа >>>",
+
+              { "inbound": ["tun-in"], "outbound": "proxy" }
+            ],
+            "final": "<<< final из ответа >>>"
+          }
+        }
+        ```
+      responses:
+        '200':
+          description: Фрагмент маршрутизации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingBoxRouting'
+              example:
+                rulesVersion: 7
+                final: "proxy"
+                rules:
+                  - domain: ["youtube.com"]
+                    outbound: "proxy"
+                  - domain_suffix: ["gosuslugi.ru", "nalog.ru"]
+                    outbound: "direct"
+                  - domain_keyword: ["doubleclick"]
+                    outbound: "block"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /routing/plain:
+    get:
+      tags: [client]
+      operationId: getPlainRouting
+      summary: Маршрутизация текстом
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      description: |
+        Для клиента, который не разбирает конфигурацию sing-box. По строке на
+        правило, `РЕЖИМ ТИП ШАБЛОН`; строки с `#` — заголовок.
+      responses:
+        '200':
+          description: Текстовый список
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # ultunnel split routing
+                # version: 7
+                # default: PROXY
+                PROXY DOMAIN youtube.com
+                DIRECT SUFFIX gosuslugi.ru
+                BLOCK KEYWORD doubleclick
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /settings:
+    get:
+      tags: [settings]
+      operationId: getSettings
+      summary: Настройки пользователя
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      responses:
+        '200':
+          description: Текущие настройки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags: [settings]
+      operationId: updateSettings
+      summary: Изменить настройки
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      description: |
+        Частичное обновление: поля, которых нет в теле, не трогаются. Смена
+        `defaultMode` увеличивает `rulesVersion`, смена `collectEnabled` — нет.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSettingsRequest'
+            examples:
+              defaultDirect:
+                summary: Всё мимо VPN, кроме правил
+                value:
+                  defaultMode: "DIRECT"
+              stopCollecting:
+                summary: Перестать собирать домены
+                value:
+                  collectEnabled: false
+      responses:
+        '200':
+          description: Настройки после изменения
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /me:
+    get:
+      tags: [settings]
+      operationId: getMe
+      summary: Пользователь, настройки и статистика
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      description: |
+        Один запрос вместо трёх. Им же удобно проверять ключ при входе: `200` —
+        ключ рабочий, `401` — нет, `403` — подписка выключена.
+      responses:
+        '200':
+          description: Состояние пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlMe'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /stats:
+    get:
+      tags: [settings]
+      operationId: getStats
+      summary: Только статистика
+      parameters:
+        - $ref: '#/components/parameters/onlyMine'
+      responses:
+        '200':
+          description: Статистика
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+
+  securitySchemes:
+    secretKey:
+      type: apiKey
+      in: header
+      name: X-Secret-Key
+      description: Secret key пользователя, выданный админкой.
+    bearerKey:
+      type: http
+      scheme: bearer
+      description: |
+        То же значение, что и в `X-Secret-Key`: `Authorization: Bearer <key>`.
+        Это не JWT.
+
+  parameters:
+    onlyMine:
+      name: onlyMine
+      in: query
+      required: false
+      description: |
+        `true` — считать только правила этого пользователя. `false` или параметр
+        не передан — правила всех подписчиков, сложенные в общий пул (поведение
+        по умолчанию).
+
+        Это опция клиентского приложения, сервер её не хранит: передавайте её в
+        каждом запросе. На `GET /visits` она влияет только на показанный режим
+        домена — сам список посещений всегда свой собственный.
+      schema:
+        type: boolean
+        default: false
+
+  responses:
+    BadRequest:
+      description: Запрос не разобран или не прошёл проверку
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: "Too many domains in one report: 2100, the limit is 2000"
+    Unauthorized:
+      description: Ключ не передан или не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: "Unknown secret key"
+    Forbidden:
+      description: Подписка пользователя выключена
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            message: "The subscription is disabled"
+    TooManyRequests:
+      description: |
+        Сработал лимит nginx. Отчёты: 60 запросов в минуту на ключ, всплеск до
+        30. Клиенту стоит отступить и прислать следующую пачку позже — данные
+        не теряются, они просто накапливаются на устройстве.
+
+  schemas:
+
+    RoutingMode:
+      type: string
+      description: |
+        Что делать с трафиком домена.
+          * `PROXY`  — через туннель (outbound `proxy`)
+          * `DIRECT` — мимо туннеля (outbound `direct`)
+          * `BLOCK`  — отбросить (outbound `block`)
+      enum: [PROXY, DIRECT, BLOCK]
+
+    DomainMatchType:
+      type: string
+      description: |
+        Как шаблон сравнивается с именем. Названия повторяют sing-box.
+          * `DOMAIN`  — точный хост; `example.com` ловит только `example.com`
+          * `SUFFIX`  — хост и всё под ним; `example.com` ловит и `a.example.com`
+          * `KEYWORD` — вхождение подстроки в любом месте имени
+
+        Если домену подошло несколько правил, побеждает самое точное: точный
+        хост важнее суффикса, длинный суффикс важнее короткого, вхождение —
+        последнее.
+      enum: [DOMAIN, SUFFIX, KEYWORD]
+
+    RuleSource:
+      type: string
+      description: |
+        Откуда взялся режим домена.
+          * `OWN`     — собственное правило пользователя, оно всегда главнее пула
+          * `SHARED`  — правило из общего пула, то есть то, о чём договорились остальные
+          * `DEFAULT` — ничего не подошло, действует режим по умолчанию
+      enum: [OWN, SHARED, DEFAULT]
+
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+      example:
+        message: "Unknown secret key"
+
+    DeletedCount:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: integer
+          format: int32
+
+    VisitReportRequest:
+      type: object
+      description: |
+        Хотя бы одно из `domains` / `entries` должно быть непустым, иначе
+        отчёт просто ничего не изменит. Явный `null` вместо списка допустим и
+        читается как пустой список. Суммарно не больше
+        `app.control.max-domains-per-report` имён (по умолчанию 2000), иначе
+        `400`.
+      properties:
+        deviceId:
+          type: string
+          maxLength: 128
+          nullable: true
+          description: |
+            Произвольная метка устройства, показывается в веб-интерфейсе.
+            Хранится последняя присланная для каждого домена.
+          example: "iphone-15"
+        domains:
+          type: array
+          nullable: true
+          description: Короткая форма — только имена, каждому засчитывается одно обращение.
+          items:
+            type: string
+        entries:
+          type: array
+          nullable: true
+          description: Подробная форма.
+          items:
+            $ref: '#/components/schemas/VisitEntry'
+
+    VisitEntry:
+      type: object
+      properties:
+        domain:
+          type: string
+          nullable: true
+          description: Имя в любом виде — сервер нормализует сам.
+          example: "https://YouTube.com/watch?v=1"
+        address:
+          type: string
+          maxLength: 64
+          nullable: true
+          description: Адрес, в который имя разрешилось. Нужен только для показа.
+          example: "142.250.74.78"
+        hits:
+          type: integer
+          format: int64
+          nullable: true
+          description: Сколько раз обращались. Не передан — считается за одно.
+          example: 12
+        at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Когда видели в последний раз. Не передан — время приёма отчёта.
+
+    VisitReportResponse:
+      type: object
+      required: [accepted, rejected, stored, rulesVersion]
+      properties:
+        accepted:
+          type: integer
+          format: int32
+          description: Сколько различных имён распозналось.
+        rejected:
+          type: integer
+          format: int32
+          description: Сколько отброшено как непригодные (IP-адреса, мусор).
+        stored:
+          type: boolean
+          description: '`false` — пользователь выключил сбор, отчёт принят и отброшен.'
+        rulesVersion:
+          type: integer
+          format: int64
+          description: Текущая версия правил; можно не ходить отдельно за ней.
+
+    VisitedDomain:
+      type: object
+      description: |
+        Поля, которых нет, означают «значения нет»: сервер не отдаёт `null` в
+        этой модели.
+      required: [domain, addresses, hits, firstSeen, lastSeen, mode, ruleSource, hasRule]
+      properties:
+        domain:
+          type: string
+          description: Канонический хост (в punycode, если имя было не ASCII).
+          example: "r1---sn-x.googlevideo.com"
+        addresses:
+          type: array
+          description: Замеченные адреса, новые впереди, не больше 12.
+          items:
+            type: string
+        hits:
+          type: integer
+          format: int64
+        firstSeen:
+          type: string
+          format: date-time
+        lastSeen:
+          type: string
+          format: date-time
+        deviceId:
+          type: string
+          description: Отсутствует, если устройство не представилось.
+        mode:
+          allOf:
+            - $ref: '#/components/schemas/RoutingMode'
+          description: |
+            Действующий режим: собственное правило, иначе правило из общего
+            пула, иначе режим по умолчанию.
+        ruleSource:
+          $ref: '#/components/schemas/RuleSource'
+        hasRule:
+          type: boolean
+          description: |
+            `true` — у пользователя есть **своё** правило на этот домен. Поля
+            `ruleId` / `rulePattern` / `ruleMatchType` описывают именно его.
+            Когда режим пришёл из пула, здесь `false`, а `ruleSource` — `SHARED`.
+        ruleId:
+          type: integer
+          format: int64
+          description: Отсутствует, если своего правила нет.
+        rulePattern:
+          type: string
+          description: Шаблон своего правила. Отсутствует, если его нет.
+        ruleMatchType:
+          allOf:
+            - $ref: '#/components/schemas/DomainMatchType'
+          description: Отсутствует, если своего правила нет.
+
+    VisitedDomainPage:
+      type: object
+      required: [total, offset, limit, items]
+      properties:
+        total:
+          type: integer
+          format: int32
+          description: Сколько всего подошло под фильтр, не только на этой странице.
+        offset:
+          type: integer
+          format: int32
+        limit:
+          type: integer
+          format: int32
+          description: Фактический размер страницы после подрезки до 1…1000.
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/VisitedDomain'
+
+    ForgetDomainsRequest:
+      type: object
+      description: Явный `null` равнозначен отсутствию поля.
+      properties:
+        domains:
+          type: array
+          nullable: true
+          items:
+            type: string
+        all:
+          type: boolean
+          nullable: true
+          default: false
+          description: |
+            `true` — стереть всю историю; `domains` тогда не учитывается. Пустой
+            или отсутствующий `domains` без `all` тоже читается как «всю историю».
+
+    Rule:
+      type: object
+      required: [id, pattern, matchType, mode, enabled, comment, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        pattern:
+          type: string
+          example: "gosuslugi.ru"
+        matchType:
+          $ref: '#/components/schemas/DomainMatchType'
+        mode:
+          $ref: '#/components/schemas/RoutingMode'
+        enabled:
+          type: boolean
+          description: Выключенное правило хранится, но не действует и не попадает в маршрутизацию.
+        comment:
+          type: string
+          maxLength: 512
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RulesResponse:
+      type: object
+      required: [rulesVersion, defaultMode, rules]
+      properties:
+        rulesVersion:
+          type: integer
+          format: int64
+        defaultMode:
+          $ref: '#/components/schemas/RoutingMode'
+        rules:
+          type: array
+          description: |
+            **Только собственные** правила пользователя, включая выключенные, по
+            возрастанию шаблона: это тот набор, который он может править. Пул
+            сюда не попадает — он виден в `/routing/singbox` и `/routing/plain`.
+          items:
+            $ref: '#/components/schemas/Rule'
+
+    UpsertRulesRequest:
+      type: object
+      required: [patterns]
+      description: Явный `null` в необязательном поле равнозначен его отсутствию.
+      properties:
+        patterns:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          example: ["gosuslugi.ru", "nalog.ru"]
+        mode:
+          type: string
+          nullable: true
+          enum: [PROXY, DIRECT, BLOCK, null]
+          description: |
+            Режим для этих шаблонов. **`null` удаляет правила** — домены
+            возвращаются под режим по умолчанию.
+        matchType:
+          allOf:
+            - $ref: '#/components/schemas/DomainMatchType'
+          nullable: true
+          default: SUFFIX
+        enabled:
+          type: boolean
+          nullable: true
+          default: true
+        comment:
+          type: string
+          maxLength: 512
+          nullable: true
+
+    DeleteRulesRequest:
+      type: object
+      description: |
+        Можно заполнить любое из полей или оба. Явный `null` равнозначен
+        отсутствию поля.
+      properties:
+        ids:
+          type: array
+          nullable: true
+          items:
+            type: integer
+            format: int64
+        patterns:
+          type: array
+          nullable: true
+          items:
+            type: string
+
+    RulesChangeResponse:
+      type: object
+      required: [created, updated, deleted, rulesVersion]
+      properties:
+        created:
+          type: integer
+          format: int32
+        updated:
+          type: integer
+          format: int32
+        deleted:
+          type: integer
+          format: int32
+        rulesVersion:
+          type: integer
+          format: int64
+          description: Версия после изменения.
+
+    ControlSettings:
+      type: object
+      required: [defaultMode, collectEnabled, rulesVersion, rulesUpdatedAt, lastReportAt]
+      properties:
+        defaultMode:
+          allOf:
+            - $ref: '#/components/schemas/RoutingMode'
+          description: Что происходит с доменом, под который не подошло ни одно правило.
+        collectEnabled:
+          type: boolean
+          description: '`false` — отчёты принимаются, но не сохраняются.'
+        rulesVersion:
+          type: integer
+          format: int64
+        rulesUpdatedAt:
+          type: string
+          format: date-time
+        lastReportAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: '`null`, если приложение ещё ничего не присылало.'
+
+    UpdateSettingsRequest:
+      type: object
+      description: Частичное обновление; отсутствующие поля не меняются.
+      properties:
+        defaultMode:
+          allOf:
+            - $ref: '#/components/schemas/RoutingMode'
+          nullable: true
+        collectEnabled:
+          type: boolean
+          nullable: true
+
+    RoutingVersion:
+      type: object
+      required: [rulesVersion, rulesUpdatedAt, defaultMode, onlyMyDomains]
+      properties:
+        rulesVersion:
+          type: integer
+          format: int64
+          description: |
+            Непрозрачное число, которое растёт при любом изменении, влияющем на
+            маршрутизацию этого клиента. С `onlyMine=false` сюда входят и чужие
+            правки, поэтому сравнивать версии нужно всегда с одним и тем же
+            `onlyMine`. Сравнивайте на неравенство, в само значение не вчитывайтесь.
+        rulesUpdatedAt:
+          type: string
+          format: date-time
+        defaultMode:
+          $ref: '#/components/schemas/RoutingMode'
+        onlyMyDomains:
+          type: boolean
+          description: Эхо применённого `onlyMine`.
+
+    SingBoxRouting:
+      type: object
+      required: [rulesVersion, onlyMyDomains, final, rules]
+      properties:
+        rulesVersion:
+          type: integer
+          format: int64
+        onlyMyDomains:
+          type: boolean
+          description: Эхо применённого `onlyMine` — с чем ответ в итоге собран.
+        final:
+          type: string
+          description: Значение для `route.final` — тег outbound режима по умолчанию.
+          enum: [proxy, direct, block]
+        rules:
+          type: array
+          description: |
+            Готовые элементы `route.rules` sing-box. Каждый объект — это одно
+            поле совпадения (`domain`, `domain_suffix` или `domain_keyword`) с
+            массивом строк плюс `outbound`.
+
+            Порядок менять нельзя: сначала идут собственные правила
+            пользователя, потом пуловые, и внутри каждой группы — точные хосты,
+            суффиксы, вхождения. sing-box берёт первое подошедшее правило,
+            поэтому именно эта очерёдность и делает своё правило главнее пула.
+          items:
+            $ref: '#/components/schemas/SingBoxRule'
+
+    SingBoxRule:
+      type: object
+      description: |
+        Ровно одно из `domain` / `domain_suffix` / `domain_keyword` плюс
+        `outbound`.
+      required: [outbound]
+      properties:
+        domain:
+          type: array
+          items:
+            type: string
+        domain_suffix:
+          type: array
+          items:
+            type: string
+        domain_keyword:
+          type: array
+          items:
+            type: string
+        outbound:
+          type: string
+          enum: [proxy, direct, block]
+
+    TopDomain:
+      type: object
+      required: [domain, hits, mode]
+      properties:
+        domain:
+          type: string
+        hits:
+          type: integer
+          format: int64
+        mode:
+          $ref: '#/components/schemas/RoutingMode'
+
+    ControlStats:
+      type: object
+      required:
+        - domains
+        - rules
+        - proxyRules
+        - directRules
+        - blockRules
+        - disabledRules
+        - sharedRules
+        - domainsLast24h
+        - topDomains
+        - lastReportAt
+        - rulesVersion
+      properties:
+        domains:
+          type: integer
+          format: int64
+          description: Сколько доменов хранится.
+        rules:
+          type: integer
+          format: int64
+          description: Все правила, включая выключенные.
+        proxyRules:
+          type: integer
+          format: int64
+          description: Действующие правила «через VPN».
+        directRules:
+          type: integer
+          format: int64
+        blockRules:
+          type: integer
+          format: int64
+        disabledRules:
+          type: integer
+          format: int64
+        sharedRules:
+          type: integer
+          format: int64
+          description: |
+            Сколько правил добавляет общий пул сверх собственных. При
+            `onlyMine=true` здесь 0.
+        domainsLast24h:
+          type: integer
+          format: int64
+        topDomains:
+          type: array
+          description: До десяти самых частых доменов с их действующим режимом.
+          items:
+            $ref: '#/components/schemas/TopDomain'
+        lastReportAt:
+          type: string
+          format: date-time
+          nullable: true
+        rulesVersion:
+          type: integer
+          format: int64
+
+    ControlMe:
+      type: object
+      required: [userName, isEnabled, settings, stats]
+      properties:
+        userName:
+          type: string
+          nullable: true
+        isEnabled:
+          type: boolean
+          description: Состояние подписки. При `false` запросы и не дошли бы — ответ был бы `403`.
+        settings:
+          $ref: '#/components/schemas/ControlSettings'
+        stats:
+          $ref: '#/components/schemas/ControlStats'

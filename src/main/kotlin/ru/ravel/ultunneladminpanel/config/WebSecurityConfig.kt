@@ -58,8 +58,18 @@ class WebSecurityConfig(
 			.csrf { it.disable() }
 			.authorizeHttpRequests { authorize ->
 				authorize
-					.requestMatchers("/js/**", "/css/**", "/logo.png", "/favicon.png").permitAll()
+					.requestMatchers("/js/**", "/css/**", "/png/**", "/svg/**", "/assets/**", "/logo.png", "/favicon.png").permitAll()
+					/* control.ultunnel.ru: no session, every call carries the user's secret key
+					   and ControlAuthInterceptor rejects it when it does not resolve. */
+					.requestMatchers("/control", "/control/**").permitAll()
 					.requestMatchers("/login", "/auth/**", "/api/v1/get-users-proxy-servers-singbox").permitAll()
+					/*
+					 * Spring dispatches an unhandled exception to /error, and Spring Security
+					 * filters that dispatch too. Left closed, every failure inside an API call
+					 * leaves as a 302 to the login form: a client following the redirect sees
+					 * a login page with status 200 and concludes the call went through.
+					 */
+					.requestMatchers("/error").permitAll()
 					.anyRequest().authenticated()
 			}
 			.formLogin {}

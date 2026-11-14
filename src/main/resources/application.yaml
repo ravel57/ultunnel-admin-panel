@@ -16,3 +16,16 @@ spring:
     suffix: .html
     mode: HTML
     cache: false
+
+# control.ultunnel.ru — collection of visited domains and split routing
+app:
+  control:
+    # how many names one POST /control/api/v1/visits may carry
+    max-domains-per-report: 2000
+    # per-user history cap; the least recently seen names are dropped past it
+    max-domains-per-user: 20000
+    # per-user routing rule cap
+    max-rules-per-user: 5000
+    # history older than this is dropped by the nightly job (0 disables it)
+    retention-days: 30
+    cleanup-cron: "0 30 4 * * *"
